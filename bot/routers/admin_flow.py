@@ -1722,11 +1722,11 @@ def _admin_actor_label(target: CallbackQuery | Message) -> str:
 
 def _admin_notification_label_items(user_id: int | None, lang: str) -> list[tuple[str, str]]:
     role = get_admin_role(user_id) if user_id else None
-    if role == "super":
-        keys = ["new_plugins", "updates", "deletions", "icons", "threshold"]
-    else:
-        keys = ["new_plugins", "updates", "deletions", "icons"]
-    return [(key, t(NOTIFICATION_PREF_LABEL_KEYS[key], lang)) for key in keys]
+    return [
+        (key, t(label_key, lang))
+        for key, label_key in NOTIFICATION_PREF_LABEL_KEYS.items()
+        if role == "super" or key not in {"appeals", "author_replies", "threshold"}
+    ]
 
 
 def _admin_notifications_text(user_id: int | None, lang: str) -> str:
