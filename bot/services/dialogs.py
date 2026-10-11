@@ -45,6 +45,31 @@ def get_dialog_ref(chat_id: int, message_id: int) -> Optional[Dict[str, Any]]:
     return ref if isinstance(ref, dict) else None
 
 
+def save_dialog_reply_draft(chat_id: int, message_id: int, draft: Dict[str, Any]) -> None:
+    doc = load_dialogs()
+    drafts = doc.setdefault("reply_drafts", {})
+    drafts[_key(chat_id, message_id)] = draft
+    if len(drafts) > _MAX_THREADS:
+        ordered = sorted(drafts, key=lambda key: str(drafts[key].get("created_at") or ""))
+        for stale_key in ordered[:len(drafts) - _MAX_THREADS]:
+            drafts.pop(stale_key, None)
+    save_dialogs(doc)
+
+
+def get_dialog_reply_draft(chat_id: int, message_id: int) -> Optional[Dict[str, Any]]:
+    draft = load_dialogs().get("reply_drafts", {}).get(_key(chat_id, message_id))
+    return draft if isinstance(draft, dict) else None
+
+
+def take_dialog_reply_draft(chat_id: int, message_id: int) -> Optional[Dict[str, Any]]:
+    doc = load_dialogs()
+    draft = doc.get("reply_drafts", {}).pop(_key(chat_id, message_id), None)
+    if isinstance(draft, dict):
+        save_dialogs(doc)
+        return draft
+    return None
+
+
 def has_dialog_media(message) -> bool:
     return any(getattr(message, kind, None) for kind in (
         "photo", "video", "animation", "document", "audio", "voice", "video_note", "sticker",

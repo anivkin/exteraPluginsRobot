@@ -1109,6 +1109,13 @@ def dialog_author_reply_kb(request_id: str, author_id: int, lang: str = "ru") ->
     ])
 
 
+def dialog_reply_confirm_kb(lang: str = "ru") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        _btn(t("dialog_reply_send", lang), callback_data="dlg:reply:send", icon="send", style="success"),
+        _btn(t("btn_cancel", lang), callback_data="dlg:reply:cancel", icon="cancel", style="danger"),
+    ]])
+
+
 def moderation_vote_reason_kb(
     request_id: str,
     owner_id: int,

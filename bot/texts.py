@@ -830,6 +830,28 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "en": "💬 <b>Author's reply to you</b>\n\n<b>Submission:</b> {name}\n<b>From:</b> {sender}\n\n<blockquote expandable>{text}</blockquote>\n\n<i>Reply to this message to continue the conversation.</i>",
     },
     "dialog_delivered": {"ru": "✅ Доставлено", "en": "✅ Delivered"},
+    "dialog_reply_confirm": {
+        "ru": "<b>Отправить этот ответ автору?</b>\n\n<b>Заявка:</b> {name}\n<b>Кому:</b> {recipient}\n<b>Модератор:</b> {sender}\n\n{media}<i>Проверьте сообщение, на которое отвечает бот. Ответ уйдёт автору только после подтверждения.</i>",
+        "en": "<b>Send this reply to the author?</b>\n\n<b>Submission:</b> {name}\n<b>To:</b> {recipient}\n<b>Moderator:</b> {sender}\n\n{media}<i>Review the message this bot prompt replies to. The reply will reach the author only after confirmation.</i>",
+    },
+    "dialog_reply_send": {"ru": "Отправить", "en": "Send"},
+    "dialog_reply_media": {
+        "ru": "<b>Медиа:</b> вложение из ответа также будет отправлено.\n\n",
+        "en": "<b>Media:</b> the attachment in your reply will also be sent.\n\n",
+    },
+    "dialog_reply_owner": {
+        "ru": "Это ответ модератора {moderator}. Подтвердить или отменить его может только он.",
+        "en": "This reply belongs to moderator {moderator}. Only they can confirm or cancel it.",
+    },
+    "dialog_reply_closed": {
+        "ru": "Этот ответ уже обрабатывается, отправлен или отменён. Повторно он не отправится.",
+        "en": "This reply is already being processed, sent or cancelled. It will not be sent again.",
+    },
+    "dialog_reply_cancelled": {"ru": "Отправка ответа отменена.", "en": "Reply cancelled."},
+    "dialog_reply_send_failed": {
+        "ru": "Не удалось отправить ответ автору. Можно попробовать ещё раз или отменить отправку.",
+        "en": "Failed to send the reply to the author. You can retry or cancel it.",
+    },
     "kb_contact_moderation": {"ru": "Связь с модерацией", "en": "Contact moderation"},
     "kb_dialog_ban_author": {"ru": "Заблокировать автора", "en": "Ban author"},
     "dialog_author_banned": {"ru": "Автор заблокирован", "en": "Author banned"},
