@@ -110,6 +110,11 @@ def parse_plugin_text(text: str, fallback_version: str | None = None) -> PluginM
             if key == "requires":
                 if not isinstance(value, dict):
                     raise PluginParseError("__requires__ must be an object")
+            elif key == "requirements":
+                if not isinstance(value, (str, list)) or (
+                    isinstance(value, list) and any(not isinstance(item, str) for item in value)
+                ):
+                    raise PluginParseError("Metadata __requirements__ must be a string or a list of strings")
             elif not isinstance(value, str):
                 raise PluginParseError(f"Metadata {target.id} must be a string")
             fields[key] = value
