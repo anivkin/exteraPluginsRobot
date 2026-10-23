@@ -28,3 +28,14 @@ venv/
 /reports
 /tests
 *.zip
+
+!/docs/
+/docs/*
+!/tests/
+/tests/*
+.env
+.env.*
+runtime.json
+.runtime-*
+secrets/
+private/

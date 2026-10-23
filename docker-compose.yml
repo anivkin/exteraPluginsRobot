@@ -7,10 +7,9 @@ services:
     restart: unless-stopped
     command: ["python", "main.py"]
     environment:
-      DATA_DIR: /app/data/data
+      DATA_DIR: /app/data
     network_mode: bridge
     volumes:
-      - ./config.json:/app/config.json
       - ./data:/app/data
       - ./sessions:/app/sessions
 
@@ -24,9 +23,8 @@ services:
     stdin_open: true
     tty: true
     environment:
-      DATA_DIR: /app/data/data
+      DATA_DIR: /app/data
     network_mode: bridge
     volumes:
-      - ./config.json:/app/config.json
       - ./data:/app/data
       - ./sessions:/app/sessions

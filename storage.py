@@ -6,90 +6,25 @@ import os
 import sqlite3
 import threading
 import time
+import tempfile
 from copy import deepcopy
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-ROOT = Path(__file__).resolve().parent
+from runtime_config import merge_secrets, persisted_secrets, read_secrets, split_config, write_secrets
+import storage_layout as _layout
+from storage_layout import (
+    ADMIN_SQLITE_PATH, CATALOG_SQLITE_PATH, DATA_DIR, LEGACY_SQLITE_PATH,
+    MIGRATION_KEY, SECRETS_PATH, StorageCorruptError, StorageError,
+    check_integrity, connect, initialize, read_config, table_exists,
+)
+
+ROOT = _layout.ROOT
+SQLITE_PATH = _layout.SQLITE_PATH
+
 _CONFIG_META_KEY = "app_config"
-
-
-def _read_config_from_sqlite_path(path: Path) -> Dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        conn = sqlite3.connect(path)
-        conn.row_factory = sqlite3.Row
-        try:
-            row = conn.execute(
-                "SELECT value FROM meta_store WHERE key = ?",
-                (_CONFIG_META_KEY,),
-            ).fetchone()
-        finally:
-            conn.close()
-    except Exception:
-        return {}
-
-    if not row:
-        return {}
-    try:
-        data = json.loads(row["value"])
-    except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _load_storage_config_from_sqlite() -> Dict[str, Any]:
-    candidates = []
-    env_path = os.environ.get("SQLITE_PATH")
-    if env_path:
-        candidates.append(Path(env_path))
-    candidates.extend(
-        [
-            ROOT / "data" / "data" / "storage.sqlite3",
-            ROOT / "data" / "storage.sqlite3",
-            Path("/app/data/data/storage.sqlite3"),
-            Path("/app/data/storage.sqlite3"),
-        ]
-    )
-
-    seen = set()
-    for path in candidates:
-        if not path.is_absolute():
-            path = ROOT / path
-        resolved = path.resolve()
-        if resolved in seen:
-            continue
-        seen.add(resolved)
-        config = _read_config_from_sqlite_path(resolved)
-        storage_cfg = config.get("storage", {}) if isinstance(config, dict) else {}
-        if isinstance(storage_cfg, dict) and storage_cfg:
-            return storage_cfg
-    return {}
-
-
-def _resolve_path(value: Optional[str], fallback: Path) -> Path:
-    if not value:
-        return fallback
-    path = Path(value)
-    if not path.is_absolute():
-        path = ROOT / path
-    return path
-
-
-_storage_cfg = _load_storage_config_from_sqlite()
-
-DATA_DIR = _resolve_path(
-    os.environ.get("DATA_DIR") or _storage_cfg.get("data_dir"),
-    Path("/app/data"),
-)
-
-SQLITE_PATH = _resolve_path(
-    os.environ.get("SQLITE_PATH") or _storage_cfg.get("sqlite_path"),
-    DATA_DIR / "storage.sqlite3",
-)
 
 _DOC_PLUGINS = "plugins"
 _DOC_ICONS = "icons"
@@ -98,7 +33,6 @@ _DOC_USERS = "users"
 _DOC_SUBSCRIPTIONS = "subscriptions"
 _DOC_UPDATED = "updated"
 _DOC_JOINLY = "joinly"
-_DOC_STENKA = "stenka"
 _DOC_AUDIT = "audit"
 _DOC_POSTER = "poster"
 _DOC_DIALOGS = "dialogs"
@@ -154,63 +88,181 @@ _config_generation = 0
 _config_persisted_generation = 0
 _config_write_lock = threading.Lock()
 
+_data_snapshot_lock = threading.RLock()
 _db_lock = threading.Lock()
 _db_ready = False
+_migration_report: Dict[str, Any] = {}
 
-
-class StorageError(RuntimeError):
-    pass
-
-
-class StorageCorruptError(StorageError):
-    pass
+def _connect() -> sqlite3.Connection:
+    return connect()
 
 
 def verify_integrity() -> None:
-    if not SQLITE_PATH.exists():
-        return
-    try:
-        conn = sqlite3.connect(SQLITE_PATH, timeout=30)
-        try:
-            row = conn.execute("PRAGMA quick_check").fetchone()
-        finally:
-            conn.close()
-    except sqlite3.DatabaseError as exc:
-        raise StorageCorruptError(
-            f"SQLite database at {SQLITE_PATH} is unreadable/corrupt: {exc}. "
-            "Restore from a known-good backup (e.g. a backups/storage_deploy_*.zip "
-            "snapshot) before starting the bot."
-        ) from exc
+    for path in (CATALOG_SQLITE_PATH, ADMIN_SQLITE_PATH):
+        if path.exists():
+            try:
+                with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=30)) as conn:
+                    check_integrity(conn, path)
+            except sqlite3.DatabaseError as exc:
+                raise StorageCorruptError(f"SQLite database is unreadable: {path}") from exc
 
-    status = str(row[0]).lower() if row and row[0] is not None else ""
-    if status != "ok":
-        raise StorageCorruptError(
-            f"SQLite integrity check failed for {SQLITE_PATH}: {status!r}. "
-            "Restore from a known-good backup before starting the bot."
-        )
+
+def _config_paths(public):
+    result = deepcopy(public)
+    storage = result.get("storage")
+    if not isinstance(storage, dict):
+        storage = result["storage"] = {}
+    storage.update({
+        "data_dir": str(DATA_DIR),
+        "sqlite_path": str(ADMIN_SQLITE_PATH),
+        "catalog_sqlite_path": str(CATALOG_SQLITE_PATH),
+        "admin_sqlite_path": str(ADMIN_SQLITE_PATH),
+        "legacy_sqlite_path": str(LEGACY_SQLITE_PATH),
+    })
+    return result
+
+
+def _prepare_config(conn, source):
+    config = read_config(source)
+    if not config:
+        return
+    public, secrets = split_config(config)
+    existing = read_secrets(SECRETS_PATH)
+    merged = merge_secrets(secrets, existing)
+    if merged or SECRETS_PATH.exists():
+        _write_runtime(merged)
+    _set_meta_json(conn, _CONFIG_META_KEY, _config_paths(public))
+
+
+def _write_runtime(secrets):
+    if SECRETS_PATH.exists() and read_secrets(SECRETS_PATH) == secrets:
+        return
+    if SECRETS_PATH.parent == DATA_DIR / "private":
+        SECRETS_PATH.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(SECRETS_PATH.parent, 0o700)
+    write_secrets(SECRETS_PATH, secrets)
+
+
+def _legacy_values(source, table):
+    if source is None or not table_exists(source, table):
+        return {}
+    return {str(row["key"]): (row["value"], row["updated_at"]) for row in source.execute(f"SELECT key, CAST(value AS BLOB) AS value, updated_at FROM {table}")}
+
+
+def _legacy_json(raw, key):
+    try:
+        value = json.loads(raw)
+    except (ValueError, UnicodeError) as exc:
+        raise StorageError(f"Invalid legacy document: {key}") from exc
+    if not isinstance(value, dict):
+        raise StorageError(f"Legacy document is not an object: {key}")
+    return value
+
+
+def _import_legacy(conn, source):
+    if source is None:
+        return
+    documents = _legacy_values(source, "meta_store")
+    documents.update(_legacy_values(source, "documents"))
+    kv = {}
+    if table_exists(source, "kv_store"):
+        kv = {str(row[0]): row[1] for row in source.execute("SELECT key, CAST(value AS BLOB) FROM kv_store")}
+    known = set(_WRITERS) | {"settings"}
+    retired = {"stenka", "snowflake"}
+    for key, (value, updated_at) in documents.items():
+        if key in (MIGRATION_KEY, _CONFIG_META_KEY):
+            continue
+        if key.removeprefix("meta:").removeprefix("init:").split(":", 1)[0] in retired:
+            continue
+        if key.startswith(("meta:", "init:")) and key.split(":", 1)[1] not in known:
+            continue
+        conn.execute("INSERT INTO documents (key,value,updated_at) VALUES (?,?,?)", (key, value.decode("utf-8") if isinstance(value, bytes) else value, updated_at))
+    fields = {"plugins": "plugins", "icons": "iconpacks", "requests": "requests", "users": "users", "subscriptions": "subscriptions", "updated": "items", "joinly": None}
+    migrated = documents.get("migration:kv_store_to_rows", (b"0", ""))[0]
+    migrated = migrated in ("1", b"1")
+    for key, writer in _WRITERS.items():
+        table = key + "_items"
+        meta_key = _meta_key(key)
+        raw = documents.get(meta_key, (None, None))[0]
+        meta = _legacy_json(raw, meta_key) if raw is not None else {}
+        initialized = documents.get(_init_key(key), (None, None))[0] in ("1", b"1")
+        exists = key in fields and table_exists(source, table)
+        has_rows = exists and source.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() is not None
+        authoritative = exists and (has_rows or initialized or migrated)
+        if authoritative:
+            schema = "catalog" if key in (_DOC_PLUGINS, _DOC_ICONS) else "main"
+            columns = [row[1] for row in conn.execute(f"PRAGMA {schema}.table_info({table})")]
+            names = ",".join('"' + column + '"' for column in columns)
+            expressions = ",".join('CAST(payload AS BLOB)' if column == "payload" else '"' + column + '"' for column in columns)
+            rows = source.execute(f"SELECT {expressions} FROM {table}")
+            conn.executemany(f"INSERT INTO {schema}.{table} ({names}) VALUES ({','.join('?' for column in columns)})", rows)
+            field = fields[key]
+            if field:
+                meta.pop(field, None)
+            else:
+                meta = {k: v for k, v in meta.items() if not k.lstrip("-").isdigit()}
+            _set_meta_json(conn, meta_key, meta)
+            _mark_initialized(conn, key)
+        elif not initialized and key in kv and not migrated:
+            writer(conn, _legacy_json(kv[key], key))
+        elif key in fields and raw is not None:
+            writer(conn, meta)
+    if "settings" in kv and "meta:settings" not in documents:
+        _set_meta_json(conn, "meta:settings", _legacy_json(kv["settings"], "settings"))
+
+
+def _ensure_db() -> None:
+    global _db_ready, _migration_report
+    if _db_ready:
+        return
+    with _data_snapshot_lock, _db_lock:
+        if _db_ready:
+            return
+        try:
+            _migration_report = initialize(_import_legacy, _prepare_config)
+        except sqlite3.DatabaseError as exc:
+            raise StorageCorruptError("Unable to initialize storage databases") from exc
+        _db_ready = True
+
+
+def migrate_storage() -> Dict[str, Any]:
+    _ensure_db()
+    return {**_migration_report, "catalog_sqlite_path": str(CATALOG_SQLITE_PATH), "admin_sqlite_path": str(ADMIN_SQLITE_PATH), "secrets_path": str(SECRETS_PATH)}
+
+
+def snapshot_databases(directory: Path) -> Dict[str, Path]:
+    directory = Path(directory)
+    with _data_snapshot_lock:
+        _ensure_db()
+        directory.mkdir(parents=True, exist_ok=True)
+        names = ["catalog.sqlite3", "admin.sqlite3"]
+        targets = {name: directory / name for name in names}
+        if any(path.exists() for path in targets.values()):
+            raise StorageError("Snapshot destination files must not exist")
+        published = []
+        try:
+            with tempfile.TemporaryDirectory(prefix=".snapshot-", dir=directory) as temporary:
+                stage = Path(temporary)
+                with closing(_connect()) as guard:
+                    guard.execute("BEGIN IMMEDIATE")
+                    for name, source_path in (("catalog.sqlite3", CATALOG_SQLITE_PATH), ("admin.sqlite3", ADMIN_SQLITE_PATH)):
+                        with closing(sqlite3.connect(source_path.as_uri() + "?mode=ro", uri=True, timeout=30)) as source, closing(sqlite3.connect(stage / name)) as destination:
+                            source.backup(destination)
+                            check_integrity(destination, source_path)
+                    guard.rollback()
+                for name, target in targets.items():
+                    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    os.replace(stage / name, target)
+                    published.append(target)
+        except BaseException:
+            for path in published:
+                path.unlink(missing_ok=True)
+            raise
+        return targets
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _ensure_data_dir() -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-
-def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(SQLITE_PATH, timeout=30)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
-        (table_name,),
-    ).fetchone()
-    return bool(row)
 
 
 def _meta_key(doc_key: str) -> str:
@@ -222,13 +274,13 @@ def _init_key(doc_key: str) -> str:
 
 
 def _get_meta_value(conn: sqlite3.Connection, key: str) -> Optional[str]:
-    row = conn.execute("SELECT value FROM meta_store WHERE key = ?", (key,)).fetchone()
+    row = conn.execute("SELECT value FROM documents WHERE key = ?", (key,)).fetchone()
     return row["value"] if row else None
 
 
 def _set_meta_value(conn: sqlite3.Connection, key: str, value: str) -> None:
     conn.execute(
-        "INSERT OR REPLACE INTO meta_store (key, value, updated_at) VALUES (?, ?, ?)",
+        "INSERT OR REPLACE INTO documents (key, value, updated_at) VALUES (?, ?, ?)",
         (key, value, _now_iso()),
     )
 
@@ -274,8 +326,6 @@ def _is_doc_empty(doc_key: str, data: Dict[str, Any]) -> bool:
         return not bool(data.get("items"))
     if doc_key == _DOC_JOINLY:
         return len(data) == 0
-    if doc_key == _DOC_STENKA:
-        return len(data) == 0
     if doc_key == _DOC_POSTER:
         return not (data.get("channels") or data.get("posts"))
     if doc_key == _DOC_AUDIT:
@@ -283,183 +333,6 @@ def _is_doc_empty(doc_key: str, data: Dict[str, Any]) -> bool:
     if doc_key == _DOC_QUIZ:
         return not bool(data.get("questions"))
     return len(data) == 0
-
-
-def _ensure_db() -> None:
-    global _db_ready
-    if _db_ready:
-        return
-
-    with _db_lock:
-        if _db_ready:
-            return
-
-        _ensure_data_dir()
-        with closing(_connect()) as conn, conn:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS meta_store (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-                """
-            )
-
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS plugins_items (
-                    sort_order INTEGER PRIMARY KEY,
-                    slug TEXT,
-                    status TEXT,
-                    category TEXT,
-                    updated_at TEXT,
-                    published_at TEXT,
-                    payload TEXT NOT NULL
-                )
-                """
-            )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_plugins_slug ON plugins_items(slug)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_plugins_status ON plugins_items(status)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_plugins_category ON plugins_items(category)")
-
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS icons_items (
-                    sort_order INTEGER PRIMARY KEY,
-                    slug TEXT,
-                    status TEXT,
-                    category TEXT,
-                    updated_at TEXT,
-                    published_at TEXT,
-                    payload TEXT NOT NULL
-                )
-                """
-            )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_icons_slug ON icons_items(slug)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_icons_status ON icons_items(status)")
-
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS requests_items (
-                    sort_order INTEGER PRIMARY KEY,
-                    request_id TEXT,
-                    status TEXT,
-                    request_type TEXT,
-                    submitted_at TEXT,
-                    updated_at TEXT,
-                    payload_user_id INTEGER,
-                    payload TEXT NOT NULL
-                )
-                """
-            )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_requests_id ON requests_items(request_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_requests_status ON requests_items(status)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_requests_type ON requests_items(request_type)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_requests_user ON requests_items(payload_user_id)")
-
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS users_items (
-                    user_id TEXT PRIMARY KEY,
-                    language TEXT,
-                    banned INTEGER,
-                    ban_reason TEXT,
-                    payload TEXT NOT NULL
-                )
-                """
-            )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_users_language ON users_items(language)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_users_banned ON users_items(banned)")
-
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS subscriptions_items (
-                    user_id TEXT NOT NULL,
-                    slug TEXT NOT NULL,
-                    position INTEGER NOT NULL,
-                    PRIMARY KEY (user_id, slug)
-                )
-                """
-            )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_subscriptions_slug ON subscriptions_items(slug)")
-
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS updated_items (
-                    sort_order INTEGER PRIMARY KEY,
-                    link TEXT,
-                    name TEXT,
-                    added_at TEXT,
-                    payload TEXT NOT NULL
-                )
-                """
-            )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_updated_link ON updated_items(link)")
-
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS joinly_items (
-                    chat_id TEXT PRIMARY KEY,
-                    payload TEXT NOT NULL
-                )
-                """
-            )
-
-            legacy_doc = "".join(
-                [
-                    chr(115),
-                    chr(110),
-                    chr(111),
-                    chr(119),
-                    chr(102),
-                    chr(108),
-                    chr(97),
-                    chr(107),
-                    chr(101),
-                ]
-            )
-            legacy_table = legacy_doc + "_items"
-            conn.execute(f"DROP TABLE IF EXISTS {legacy_table}")
-            conn.execute(
-                "DELETE FROM meta_store WHERE key IN (?, ?)",
-                (_meta_key(legacy_doc), _init_key(legacy_doc)),
-            )
-
-            _migrate_from_kv_store(conn)
-            conn.commit()
-
-        _db_ready = True
-
-
-def _migrate_from_kv_store(conn: sqlite3.Connection) -> None:
-    if not _table_exists(conn, "kv_store"):
-        return
-    if _get_meta_value(conn, "migration:kv_store_to_rows") == "1":
-        return
-
-    docs: Dict[str, Dict[str, Any]] = {}
-    rows = conn.execute("SELECT key, value FROM kv_store").fetchall()
-    for row in rows:
-        key = str(row["key"])
-        if key not in _WRITERS:
-            continue
-        try:
-            parsed = json.loads(row["value"])
-        except Exception:
-            continue
-        if isinstance(parsed, dict):
-            docs[key] = parsed
-
-    for key, doc in docs.items():
-        if _is_initialized(conn, key):
-            continue
-        _WRITERS[key](conn, doc)
-
-    _set_meta_value(conn, "migration:kv_store_to_rows", "1")
 
 
 def _read_items_payload(rows: list[sqlite3.Row]) -> list[Any]:
@@ -767,16 +640,6 @@ def _write_joinly_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
     _mark_initialized(conn, _DOC_JOINLY)
 
 
-def _read_stenka_doc(conn: sqlite3.Connection) -> Dict[str, Any]:
-    return _get_meta_json(conn, _meta_key(_DOC_STENKA), {})
-
-
-def _write_stenka_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
-    payload = dict(data) if isinstance(data, dict) else {}
-    _set_meta_json(conn, _meta_key(_DOC_STENKA), payload)
-    _mark_initialized(conn, _DOC_STENKA)
-
-
 def _read_poster_doc(conn: sqlite3.Connection) -> Dict[str, Any]:
     data = _get_meta_json(conn, _meta_key(_DOC_POSTER), {})
     if not isinstance(data.get("channels"), list):
@@ -872,7 +735,6 @@ _READERS = {
     _DOC_SUBSCRIPTIONS: _read_subscriptions_doc,
     _DOC_UPDATED: _read_updated_doc,
     _DOC_JOINLY: _read_joinly_doc,
-    _DOC_STENKA: _read_stenka_doc,
     _DOC_AUDIT: _read_audit_doc,
     _DOC_POSTER: _read_poster_doc,
     _DOC_DIALOGS: _read_dialogs_doc,
@@ -888,7 +750,6 @@ _WRITERS = {
     _DOC_SUBSCRIPTIONS: _write_subscriptions_doc,
     _DOC_UPDATED: _write_updated_doc,
     _DOC_JOINLY: _write_joinly_doc,
-    _DOC_STENKA: _write_stenka_doc,
     _DOC_AUDIT: _write_audit_doc,
     _DOC_POSTER: _write_poster_doc,
     _DOC_DIALOGS: _write_dialogs_doc,
@@ -899,7 +760,7 @@ _WRITERS = {
 
 def _read_sqlite_doc_sync(doc_key: str) -> Dict[str, Any]:
     _ensure_db()
-    with closing(_connect()) as conn, conn:
+    with _data_snapshot_lock, closing(_connect()) as conn, conn:
         data = _READERS[doc_key](conn)
         if _is_initialized(conn, doc_key):
             return data
@@ -915,7 +776,7 @@ def _write_sqlite_doc_sync(doc_key: str, data: Dict[str, Any]) -> None:
     _ensure_db()
     payload = dict(data) if isinstance(data, dict) else {}
     payload.setdefault("updated_at", _now_iso())
-    with closing(_connect()) as conn, conn:
+    with _data_snapshot_lock, closing(_connect()) as conn, conn:
         _WRITERS[doc_key](conn, payload)
         conn.commit()
 
@@ -1008,50 +869,50 @@ def load_config() -> Dict[str, Any]:
     global _config_cache, _config_cache_time
     now = time.time()
     if _config_cache is not None and (now - _config_cache_time) < _CONFIG_TTL:
-        return _config_cache
-
-    try:
-        _ensure_db()
-        with closing(_connect()) as conn, conn:
-            data = _get_meta_json(conn, _CONFIG_META_KEY, {})
-    except Exception:
-        data = {}
-
-    if not isinstance(data, dict):
-        raise StorageError("Config format is invalid")
-    if not data:
-        raise StorageError(f"Config not found in SQLite: {SQLITE_PATH}")
-
+        with _data_snapshot_lock:
+            _, cached_secrets = split_config(_config_cache)
+            data = merge_secrets(_config_cache, read_secrets(SECRETS_PATH))
+            return merge_secrets(merge_secrets(data, cached_secrets), {}, os.environ)
+    _ensure_db()
+    with _data_snapshot_lock, closing(_connect()) as conn:
+        raw = _get_meta_value(conn, _CONFIG_META_KEY)
+        if raw is None:
+            raise StorageError(f"Config not found in SQLite: {ADMIN_SQLITE_PATH}. Initialize with save_config(public_config) before startup")
+        try:
+            data = json.loads(raw)
+        except (ValueError, UnicodeError) as exc:
+            raise StorageError("Config format is invalid") from exc
+        if not isinstance(data, dict):
+            raise StorageError("Config format is invalid")
+        data = merge_secrets(data, read_secrets(SECRETS_PATH))
     data, changed = _normalize_config_defaults(data)
     if changed:
-        try:
-            with closing(_connect()) as conn, conn:
-                _set_meta_json(conn, _CONFIG_META_KEY, data)
-                conn.commit()
-        except Exception:
-            pass
-
-    _config_cache = data
-    _config_cache_time = now
-    return data
+        save_config(data)
+    else:
+        _config_cache = data
+        _config_cache_time = now
+    return merge_secrets(data, {}, os.environ)
 
 
 def _write_config_sync(payload: Dict[str, Any], generation: int) -> None:
     global _config_persisted_generation
-
-    with _config_write_lock:
+    with _config_write_lock, _data_snapshot_lock:
         if generation < _config_generation:
             return
         _ensure_db()
+        public, secrets = persisted_secrets(payload, read_secrets(SECRETS_PATH))
+        public = _config_paths(public)
+        if secrets or SECRETS_PATH.exists():
+            _write_runtime(secrets)
         with closing(_connect()) as conn, conn:
-            _set_meta_json(conn, _CONFIG_META_KEY, payload)
-            conn.commit()
+            _set_meta_json(conn, _CONFIG_META_KEY, public)
         _config_persisted_generation = max(_config_persisted_generation, generation)
 
 
 def save_config(data: Dict[str, Any]) -> None:
-    payload = dict(data) if isinstance(data, dict) else {}
+    payload = deepcopy(data) if isinstance(data, dict) else {}
     payload, _ = _normalize_config_defaults(payload)
+    payload = _config_paths(payload)
     payload["updated_at"] = _now_iso()
 
     global _config_cache, _config_cache_time, _config_generation
@@ -1127,15 +988,6 @@ def load_joinly() -> Dict[str, Any]:
 
 def save_joinly(data: Dict[str, Any]) -> None:
     _save_sync(_DOC_JOINLY, data)
-
-
-def load_stenka() -> Dict[str, Any]:
-    data = _get_cached(_DOC_STENKA)
-    return data if isinstance(data, dict) else {}
-
-
-def save_stenka(data: Dict[str, Any]) -> None:
-    _save_sync(_DOC_STENKA, data)
 
 
 QUIZ_QUESTIONS_PER_RUN = 3
@@ -1334,7 +1186,6 @@ async def preload_storage() -> None:
         _DOC_SUBSCRIPTIONS,
         _DOC_UPDATED,
         _DOC_JOINLY,
-        _DOC_STENKA,
         _DOC_AUDIT,
         _DOC_QUIZ,
     ):

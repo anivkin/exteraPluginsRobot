@@ -9,6 +9,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from bot.services.plugin_files import plugin_document
+from bot.services import reason_templates
+from bot.services.reason_templates import (
+    TEMPLATE_CONFIG_KEYS, TEMPLATES_LIMIT, load_reason_templates,
+    template_kind, template_page, templates_allowed,
+)
 from aiogram import F, Router
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramRetryAfter
@@ -28,7 +33,7 @@ from bot.cache import (
 from bot.constants import PAGE_SIZE
 from bot.context import get_lang
 from bot.callback_tokens import decode_slug, encode_slug
-from bot.formatting import plain_html, strip_blockquote_tags, telegram_html, user_mention
+from bot.formatting import split_html, plain_html, strip_blockquote_tags, telegram_html, user_mention
 from bot.helpers import ack, answer, spawn_background
 from bot.menu_owner import MenuOwnerMiddleware, remember_menu_owner
 from bot.services.audit import add_audit_event, audit_events_page, recent_audit_events
@@ -137,10 +142,15 @@ from request_store import (
     update_request_payload,
     update_request_status,
 )
-from storage import DATA_DIR, QUIZ_OPTIONS_PER_QUESTION, QUIZ_QUESTIONS_PER_RUN, SQLITE_PATH, add_quiz_question, delete_quiz_question, load_config, load_plugins, load_quiz_questions, restore_quiz_defaults, save_config, save_plugins, update_quiz_question
+from storage import ADMIN_SQLITE_PATH, CATALOG_SQLITE_PATH, DATA_DIR, QUIZ_OPTIONS_PER_QUESTION, QUIZ_QUESTIONS_PER_RUN, add_quiz_question, delete_quiz_question, load_config, load_plugins, load_quiz_questions, restore_quiz_defaults, save_config, save_plugins, update_quiz_question
 from user_store import ban_user, get_banned_users, is_broadcast_enabled, list_users, unban_user
 from subscription_store import list_subscribers
 from catalog import invalidate_catalog_cache
+
+DEFAULT_APPROVE_TEMPLATES = reason_templates.DEFAULT_APPROVE_TEMPLATES
+DEFAULT_REJECT_TEMPLATES = reason_templates.DEFAULT_REJECT_TEMPLATES
+DEFAULT_UPDATE_APPROVE_TEMPLATES = reason_templates.DEFAULT_UPDATE_APPROVE_TEMPLATES
+DEFAULT_UPDATE_REJECT_TEMPLATES = reason_templates.DEFAULT_UPDATE_REJECT_TEMPLATES
 
 logger = logging.getLogger(__name__)
 
@@ -1891,7 +1901,8 @@ def _build_health_text() -> str:
 
     lines = [
         "<b>Health</b>",
-        f"SQLite: <code>{plain_html(SQLITE_PATH)}</code> {'✅' if SQLITE_PATH.exists() else '❌'}",
+        f"Admin SQLite: <code>{plain_html(ADMIN_SQLITE_PATH)}</code> {'✅' if ADMIN_SQLITE_PATH.exists() else '❌'}",
+        f"Catalog SQLite: <code>{plain_html(CATALOG_SQLITE_PATH)}</code> {'✅' if CATALOG_SQLITE_PATH.exists() else '❌'}",
         f"Data dir: <code>{plain_html(DATA_DIR)}</code> {'✅' if DATA_DIR.exists() else '❌'}",
         f"Plugins in catalog: <code>{plugins_count}</code>",
         f"Requests pending/error/scheduled: <code>{counts['pending']}/{counts['error']}/{counts['scheduled']}</code>",
@@ -6348,7 +6359,7 @@ async def on_admin_reject(cb: CallbackQuery, state: FSMContext) -> None:
     await _nav_push(state, f"adm:reject:{request_id}")
     await state.update_data(reject_show_votes=default_votes)
     await cb.message.edit_reply_markup(
-        reply_markup=admin_reject_kb(request_id, lang=lang, show_votes=default_votes))
+        reply_markup=admin_reject_kb(request_id, lang=lang, show_votes=default_votes, allow_templates=templates_allowed(entry)))
     await ack(cb)
 
 
@@ -6369,7 +6380,7 @@ async def on_admin_reject_votes_toggle(cb: CallbackQuery, state: FSMContext) -> 
     await state.update_data(reject_show_votes=show_votes)
     try:
         await cb.message.edit_reply_markup(
-            reply_markup=admin_reject_kb(request_id, lang=lang, show_votes=show_votes))
+            reply_markup=admin_reject_kb(request_id, lang=lang, show_votes=show_votes, allow_templates=templates_allowed(entry)))
     except Exception:
         pass
     await ack(cb)
@@ -6472,14 +6483,16 @@ async def _finalize_rejection(
         notify_text += t("notify_rejected_blocked", author_lang)
 
     try:
-        await bot.send_message(
-            user_id,
-            notify_text,
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
-            reply_markup=author_rejected_kb(str(request_id), can_appeal=not was_appeal, lang=author_lang),
-            **author_reply_kwargs(entry),
-        )
+        parts = split_html(notify_text, 3500)
+        for index, part in enumerate(parts):
+            await bot.send_message(
+                user_id,
+                part,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+                reply_markup=author_rejected_kb(str(request_id), can_appeal=not was_appeal, lang=author_lang) if index + 1 == len(parts) else None,
+                **author_reply_kwargs(entry),
+            )
         if media:
             from bot.services.moderation import send_media_group
 
@@ -6666,6 +6679,9 @@ async def on_admin_reject_silent(cb: CallbackQuery, state: FSMContext) -> None:
         return
     request_id = cb.data.split(":")[2]
     entry = get_request_by_id(request_id)
+    if entry and not templates_allowed(entry):
+        await cb.answer(_tr(cb, "reason_templates_forbidden"), show_alert=True)
+        return
     if entry:
         payload = entry.get("payload", {})
         if payload.get("submission_type") == "icon" or payload.get("icon"):
@@ -6728,87 +6744,16 @@ async def on_admin_reject_silent(cb: CallbackQuery, state: FSMContext) -> None:
     await ack(cb)
 
 
-_REJECT_TEMPLATES_LIMIT = 15
-
-
-DEFAULT_APPROVE_TEMPLATES = [
-    "Полезный плагин, работает стабильно",
-    "Уникальный функционал, аналогов в каталоге нет",
-    "Качественная реализация, код аккуратный",
-    "Заметно лучше существующего аналога",
-    "Проверено на актуальной версии — работает",
-    "Закрывает частый запрос пользователей",
-    "Оптимизировано, клиент не нагружает",
-    "Форк оправдан: оригинал заброшен и не работает",
-    "Описание и инструкция оформлены корректно",
-    "Замечаний нет, к публикации готов",
-]
-
-DEFAULT_REJECT_TEMPLATES = [
-    "Плагин не даёт заметной пользы по сравнению с уже опубликованными решениями",
-    "Функция уже есть в exteraGram, AyuGram, Telegram или существующем плагине",
-    "Реализация дублирует существующий плагин без заметных преимуществ",
-    "Задача слишком простая для отдельного плагина",
-    "В работе найдены критические ошибки или нестабильность",
-    "Плагин не работает на актуальной версии клиента",
-    "Метаданные заполнены некорректно либо файл не проходит проверку",
-    "Описание не объясняет назначение плагина или способ использования",
-    "В коде есть подозрительное действие, скрытая загрузка или небезопасная логика",
-    "Код требует доработки и повторной проверки перед публикацией",
-]
-
-DEFAULT_UPDATE_APPROVE_TEMPLATES = [
-    "Версия повышена корректно, метаданные обновления заполнены",
-    "Обновление проверено на актуальной версии клиента — работает стабильно",
-    "Исправлены заявленные ошибки, результат соответствует чейнджлогу",
-    "Восстановлена совместимость с актуальной версией exteraGram/AyuGram",
-    "Добавлены полезные функции без ухудшения существующего поведения",
-    "Улучшены производительность и стабильность плагина",
-    "Критических ошибок и регрессий после обновления не обнаружено",
-    "Исправлена проблема безопасности или нежелательное поведение",
-    "Код обновления аккуратный, лишних зависимостей и скрытых действий нет",
-    "Замечаний к обновлению нет, новая версия готова к публикации",
-]
-
-DEFAULT_UPDATE_REJECT_TEMPLATES = [
-    "Версия плагина должна быть строго выше опубликованной",
-    "Минимальная версия клиента указана ниже допустимой или заполнена неверно",
-    "Заявленные изменения отсутствуют в файле или не соответствуют чейнджлогу",
-    "Чейнджлог отсутствует либо не объясняет, что именно изменилось",
-    "Обновление содержит критические ошибки или ломает существующие функции",
-    "Обновление не работает на актуальной версии exteraGram/AyuGram",
-    "ID плагина не совпадает с ID опубликованной версии",
-    "Метаданные обновления заполнены некорректно или не парсятся",
-    "В обновлении появился подозрительный код, скрытая загрузка или нежелательное действие",
-    "После обновления качество, стабильность или удобство плагина ухудшились",
-]
-
-_TEMPLATE_CONFIG_KEYS = {
-    "reject": "reject_templates",
-    "approve": "approve_templates",
-    "update_reject": "update_reject_templates",
-    "update_approve": "update_approve_templates",
-}
+_REJECT_TEMPLATES_LIMIT = TEMPLATES_LIMIT
+_TEMPLATE_CONFIG_KEYS = TEMPLATE_CONFIG_KEYS
 
 
 def _template_kind(raw: str) -> str:
-    value = str(raw or "")
-    return value if value in _TEMPLATE_CONFIG_KEYS else "reject"
+    return template_kind(raw)
 
 
-def _load_templates(kind: str = "reject") -> list[str]:
-    kind = _template_kind(kind)
-    cfg = get_config()
-    raw = cfg.get(_TEMPLATE_CONFIG_KEYS[kind])
-    if not isinstance(raw, list):
-        if kind == "update_approve":
-            return list(DEFAULT_UPDATE_APPROVE_TEMPLATES)
-        if kind == "update_reject":
-            return list(DEFAULT_UPDATE_REJECT_TEMPLATES)
-        if kind == "approve":
-            return list(DEFAULT_APPROVE_TEMPLATES)
-        return list(DEFAULT_REJECT_TEMPLATES)
-    return [str(x).strip() for x in raw if str(x).strip()]
+def _load_templates(kind: str = "reject", lang: str = "ru") -> list[str]:
+    return load_reason_templates(get_config(), kind, lang)
 
 
 def _save_templates(templates: list[str], kind: str = "reject") -> None:
@@ -6826,10 +6771,10 @@ def _rejtpl_list_text(templates: list[str]) -> str:
     )
 
 
-async def _render_rejtpl_cfg(target, state: FSMContext, kind: str = "reject") -> None:
+async def _render_rejtpl_cfg(target, state: FSMContext, kind: str = "reject", page: int = 0) -> None:
     lang = _lang_for(target)
     kind = _template_kind(kind)
-    templates = _load_templates(kind)
+    templates = _load_templates(kind, lang)
     title_key = {
         "approve": "admin_apptpl_cfg_title",
         "reject": "admin_rejtpl_cfg_title",
@@ -6842,11 +6787,21 @@ async def _render_rejtpl_cfg(target, state: FSMContext, kind: str = "reject") ->
         "update_approve": "admin_update_apptpl_cfg_empty",
         "update_reject": "admin_update_rejtpl_cfg_empty",
     }[kind]
+    body, _, page, total = template_page(templates, page)
+    text = t(title_key, lang, templates=body) if templates else t(empty_key, lang)
     if templates:
-        text = t(title_key, lang, templates=_rejtpl_list_text(templates))
-    else:
-        text = t(empty_key, lang)
-    await answer(target, text, admin_reject_templates_cfg_kb(templates, kind=kind, lang=lang), "admin")
+        text += "\n\n" + t("reason_templates_page", lang, page=page + 1, total=total)
+    await answer(target, text, admin_reject_templates_cfg_kb(templates, kind=kind, lang=lang, page=page), "admin")
+
+
+@router.callback_query(F.data.regexp(r"^adm:rejtpl_cfgpage:(reject|approve|update_reject|update_approve):\d+$"))
+async def on_admin_rejtpl_cfg_page(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin_role(cb, "super"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    parts = (cb.data or "").split(":")
+    await _render_rejtpl_cfg(cb, state, parts[2], int(parts[3]))
+    await ack(cb)
 
 
 @router.callback_query(F.data.regexp(r"^adm:rejtpl_cfg(?::(?:reject|approve|update_reject|update_approve))?$"))
@@ -6920,89 +6875,135 @@ async def on_admin_rejtpl_del(cb: CallbackQuery, state: FSMContext) -> None:
     await ack(cb)
 
 
-@router.callback_query(F.data.startswith("adm:rejtpl_pick:"))
-async def on_admin_rejtpl_pick(cb: CallbackQuery, state: FSMContext) -> None:
-    lang = _lang_for(cb)
+async def _template_request(cb: CallbackQuery) -> dict | None:
     if not _is_super_admin(cb):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
-        return
-    request_id = cb.data.split(":")[2]
-    entry = get_request_by_id(request_id)
-    if entry and not _ensure_request_role(cb, entry):
+        return None
+    request_id = (cb.data or "").split(":")[2]
+    entry = get_request_by_callback_token(request_id)
+    if not entry:
+        await cb.answer(_tr(cb, "admin_request_not_found"), show_alert=True)
+        return None
+    if not _ensure_request_role(cb, entry):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
-        return
-    kind = "update_reject" if entry and entry.get("type") == "update" else "reject"
-    templates = _load_templates(kind)
+        return None
+    if not templates_allowed(entry):
+        await cb.answer(_tr(cb, "reason_templates_forbidden"), show_alert=True)
+        return None
+    if entry.get("status") not in {"pending", "error", "scheduled", "rework"}:
+        await cb.answer(_tr(cb, "vote_expired"), show_alert=True)
+        return None
+    return entry
+
+
+def _selected_templates(data: dict, request_id: str, count: int) -> list[int]:
+    if data.get("reject_tpl_request_id") != request_id:
+        return []
+    return list(dict.fromkeys(i for i in (data.get("reject_tpl_sel") or [])
+                              if isinstance(i, int) and 0 <= i < count))
+
+
+async def _check_template_snapshot(cb: CallbackQuery, state: FSMContext, entry: dict, data: dict) -> bool:
+    kind = "update_reject" if entry.get("type") == "update" else "reject"
+    if data.get("reject_tpl_request_id") == str(entry["id"]) and data.get("reject_tpl_options") == _load_templates(kind):
+        return True
+    await state.update_data(reject_tpl_sel=[], reject_tpl_options=None, reject_tpl_request_id=None)
+    await cb.answer(_tr(cb, "reason_templates_changed"), show_alert=True)
+    return False
+
+
+async def _render_rejection_templates(cb: CallbackQuery, state: FSMContext, entry: dict, page: int = 0) -> None:
+    lang = _lang_for(cb)
+    request_id = str(entry["id"])
+    kind = "update_reject" if entry.get("type") == "update" else "reject"
+    templates = _load_templates(kind, lang)
     if not templates:
         await cb.answer(_tr(cb, "admin_rejtpl_empty"), show_alert=True)
         return
-    await state.update_data(reject_tpl_sel=[])
-    text = t("admin_rejtpl_pick_title", lang, templates=_rejtpl_list_text(templates))
-    await answer(cb, text, admin_reject_templates_kb(request_id, templates, [], lang=lang), "admin")
+    data = await state.get_data()
+    if not await _check_template_snapshot(cb, state, entry, data):
+        return
+    selected = _selected_templates(data, request_id, len(templates))
+    body, _, page, total = template_page(templates, page)
+    text = t("admin_rejtpl_pick_title", lang, templates=body)
+    text += "\n\n" + t("reason_templates_page", lang, page=page + 1, total=total)
+    if selected:
+        text += "\n" + t("reason_templates_selected", lang, numbers=", ".join(str(i + 1) for i in selected))
+    await state.update_data(reject_tpl_page=page)
+    await answer(cb, text, admin_reject_templates_kb(request_id, templates, selected, lang=lang, page=page), "admin")
+
+
+@router.callback_query(F.data.startswith("adm:rejtpl_pick:"))
+async def on_admin_rejtpl_pick(cb: CallbackQuery, state: FSMContext) -> None:
+    entry = await _template_request(cb)
+    if not entry:
+        return
+    kind = "update_reject" if entry.get("type") == "update" else "reject"
+    await state.update_data(reject_tpl_request_id=str(entry["id"]), reject_tpl_sel=[], reject_tpl_page=0,
+                            reject_tpl_options=_load_templates(kind))
+    await _render_rejection_templates(cb, state, entry)
+    await ack(cb)
+
+
+@router.callback_query(F.data.regexp(r"^adm:rejtpl_page:[^:]+:\d+$"))
+async def on_admin_rejtpl_page(cb: CallbackQuery, state: FSMContext) -> None:
+    entry = await _template_request(cb)
+    if not entry:
+        return
+    await _render_rejection_templates(cb, state, entry, int((cb.data or "").split(":")[3]))
     await ack(cb)
 
 
 @router.callback_query(F.data.regexp(r"^adm:rejtpl_t:[^:]+:\d+$"))
 async def on_admin_rejtpl_toggle(cb: CallbackQuery, state: FSMContext) -> None:
-    lang = _lang_for(cb)
-    if not _is_super_admin(cb):
-        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+    entry = await _template_request(cb)
+    if not entry:
         return
-    parts = cb.data.split(":")
-    request_id, idx = parts[2], int(parts[3])
-    entry = get_request_by_id(request_id)
-    kind = "update_reject" if entry and entry.get("type") == "update" else "reject"
-    templates = _load_templates(kind)
-    if idx >= len(templates):
-        await cb.answer()
+    request_id = str(entry["id"])
+    idx = int((cb.data or "").split(":")[3])
+    kind = "update_reject" if entry.get("type") == "update" else "reject"
+    templates = _load_templates(kind, _lang_for(cb))
+    if not 0 <= idx < len(templates):
+        await cb.answer(_tr(cb, "vote_expired"), show_alert=True)
         return
     data = await state.get_data()
-    selected = [i for i in (data.get("reject_tpl_sel") or []) if isinstance(i, int) and i < len(templates)]
+    if not await _check_template_snapshot(cb, state, entry, data):
+        return
+    selected = _selected_templates(data, request_id, len(templates))
     if idx in selected:
         selected.remove(idx)
     else:
         selected.append(idx)
-    await state.update_data(reject_tpl_sel=selected)
-    try:
-        await cb.message.edit_reply_markup(
-            reply_markup=admin_reject_templates_kb(request_id, templates, selected, lang=lang))
-    except Exception:
-        pass
+    await state.update_data(reject_tpl_request_id=request_id, reject_tpl_sel=selected)
+    await _render_rejection_templates(cb, state, entry, data.get("reject_tpl_page", 0))
     await ack(cb)
 
 
 @router.callback_query(F.data.startswith("adm:rejtpl_go:"))
 async def on_admin_rejtpl_go(cb: CallbackQuery, state: FSMContext) -> None:
-    lang = _lang_for(cb)
-    if not _is_super_admin(cb):
-        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
-        return
-    request_id = cb.data.split(":")[2]
-    entry = get_request_by_id(request_id)
+    entry = await _template_request(cb)
     if not entry:
-        await cb.answer(_tr(cb, "admin_request_not_found"), show_alert=True)
         return
-    if not _ensure_request_role(cb, entry):
-        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
-        return
+    lang = _lang_for(cb)
+    request_id = str(entry["id"])
     kind = "update_reject" if entry.get("type") == "update" else "reject"
-    templates = _load_templates(kind)
+    author_id = (entry.get("payload") or {}).get("user_id")
+    templates = _load_templates(kind, get_lang(author_id) if author_id else lang)
     data = await state.get_data()
-    selected = [i for i in (data.get("reject_tpl_sel") or []) if isinstance(i, int) and 0 <= i < len(templates)]
+    if not await _check_template_snapshot(cb, state, entry, data):
+        return
+    selected = _selected_templates(data, request_id, len(templates))
     if not selected:
         await cb.answer(_tr(cb, "admin_rejtpl_empty"), show_alert=True)
         return
-    comment = "\n".join(f"{pos + 1}. {templates[i]}" for pos, i in enumerate(selected))
+    comment = "\n".join(f"{pos + 1}. {plain_html(templates[i])}" for pos, i in enumerate(selected))
     await _finalize_rejection(
         cb.bot, cb, entry, request_id, comment,
         show_votes=bool(data.get("reject_show_votes")),
     )
-    await state.update_data(reject_tpl_sel=[])
+    await state.update_data(reject_tpl_sel=[], reject_tpl_options=None, reject_tpl_request_id=None)
     await answer(cb, _tr(cb, "admin_rejected_done"), admin_menu_kb(_admin_menu_role(cb), lang=lang), "admin")
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(F.data.startswith("adm:rework:"))

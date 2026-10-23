@@ -1,5 +1,4 @@
 import asyncio
-import re
 import html
 import logging
 from copy import deepcopy
@@ -44,7 +43,7 @@ from bot.keyboards import (
     submit_type_kb,
     user_plugins_kb,
 )
-from storage import QUIZ_QUESTIONS_PER_RUN, build_quiz, load_stenka, save_stenka
+from storage import QUIZ_QUESTIONS_PER_RUN, build_quiz
 from bot.cache import get_admins, get_admins_plugins, get_categories
 from bot.services.request_context import author_context
 from bot.services.submission import (
@@ -624,12 +623,6 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     if payload:
         if payload.startswith("plugin_"):
             payload = payload[len("plugin_") :]
-        if payload.startswith("stenka_"):
-            wall_id = payload[len("stenka_") :]
-            await state.update_data(lang=get_lang(user_id), stenka_wall_id=wall_id)
-            await state.set_state(UserFlow.entering_stenka_tag)
-            await answer(message, t("stenka_prompt_enter_tag", get_lang(user_id)))
-            return
         await state.update_data(start_payload=payload)
 
     if get_user_language(user_id):
@@ -771,91 +764,6 @@ async def on_appeal_text(message: Message, state: FSMContext) -> None:
 
     await state.set_state(UserFlow.idle)
     await message.answer(t("appeal_sent", lang), parse_mode=ParseMode.HTML)
-
-
-@router.message(UserFlow.entering_stenka_tag)
-async def on_stenka_tag_dm(message: Message, state: FSMContext) -> None:
-    if not message.from_user:
-        return
-    lang = await get_language(message, state)
-    data = await state.get_data()
-    wall_id = str(data.get("stenka_wall_id") or "").strip()
-    if not wall_id:
-        await message.answer(t("stenka_err_not_found", lang), parse_mode=ParseMode.HTML)
-        await state.clear()
-        await state.set_state(UserFlow.idle)
-        return
-
-    raw = (message.text or "").strip()
-    raw = raw.replace(" ", "")
-    if raw.startswith("#"):
-        raw = raw[1:]
-    if not raw:
-        await message.answer(t("need_text", lang), parse_mode=ParseMode.HTML)
-        return
-    if len(raw) > 15:
-        await message.answer(t("stenka_err_tag_too_long", lang), parse_mode=ParseMode.HTML)
-        return
-    if not re.fullmatch(r"\w+", raw, flags=re.UNICODE):
-        await message.answer(t("stenka_err_tag_format", lang), parse_mode=ParseMode.HTML)
-        return
-    tag = raw
-
-    db = load_stenka()
-    if not isinstance(db, dict):
-        db = {}
-    walls = db.get("walls") if isinstance(db.get("walls"), dict) else {}
-    wall = walls.get(wall_id) if isinstance(walls, dict) else None
-    if not isinstance(wall, dict):
-        await message.answer(t("stenka_err_not_found", lang), parse_mode=ParseMode.HTML)
-        await state.clear()
-        await state.set_state(UserFlow.idle)
-        return
-
-    tags = wall.get("tags") if isinstance(wall.get("tags"), list) else []
-    if any(str(t).strip() == tag for t in tags):
-        await message.answer(t("stenka_err_tag_taken", lang), parse_mode=ParseMode.HTML)
-        return
-
-    users = wall.get("users") if isinstance(wall.get("users"), dict) else {}
-    uid_str = str(message.from_user.id)
-    if uid_str in users:
-        await message.answer(t("stenka_err_already_wrote", lang, tag=users.get(uid_str, "")), parse_mode=ParseMode.HTML)
-        return
-
-    tags.append(tag)
-    wall["tags"] = tags
-    users[uid_str] = tag
-    wall["users"] = users
-    save_stenka(db)
-
-    from bot.routers.catalog_flow import _stenka_render_text, _stenka_kb
-
-    text = _stenka_render_text(wall_id)
-    try:
-        if wall.get("inline_message_id"):
-            await message.bot.edit_message_text(
-                inline_message_id=str(wall.get("inline_message_id")),
-                text=text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=_stenka_kb(wall_id, lang=lang),
-                disable_web_page_preview=True,
-            )
-        elif wall.get("chat_id") and wall.get("message_id"):
-            await message.bot.edit_message_text(
-                chat_id=int(wall.get("chat_id")),
-                message_id=int(wall.get("message_id")),
-                text=text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=_stenka_kb(wall_id, lang=lang),
-                disable_web_page_preview=True,
-            )
-    except Exception:
-        pass
-
-    await message.answer(t("stenka_ok_saved", lang), parse_mode=ParseMode.HTML)
-    await state.clear()
-    await state.set_state(UserFlow.idle)
 
 
 @router.message(Command("lang"))

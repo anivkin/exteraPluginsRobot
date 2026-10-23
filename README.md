@@ -25,7 +25,7 @@ Live bot: [@exteraPluginsRobot](https://t.me/exteraPluginsRobot)
 - **Mandatory vote reason**: anonymous, from a template, or custom — separate template sets for approve and reject.
 - **Reasons are sent to the author** by default (can be turned off) as a reply to their original submission.
 - **Appeals**: an author can resubmit a rejected plugin with a comment; a second rejection puts the plugin id on a blocklist.
-- **Author contact**: replies go to the forum, not to a single moderator's DM.
+- **Author contact**: replies are delivered to the conversation's recipient; forum replies to authors require confirmation.
 - **Audit log** of every action, with filters, plus a record of who approved or rejected each request.
 - **Rejected files are kept for 7 days** in case the decision is reversed.
 
@@ -70,15 +70,16 @@ Managed via **`/settings`** in a group or **Profile → Joinly** (chat admins on
 Requires **Python 3.12**.
 
 1. `pip install -r requirements.txt`
-2. Configure `config.json`
-3. Run:
+2. Set `DATA_DIR` to your data directory. An existing `storage.sqlite3` is migrated automatically; keep a backup and stop the old bot first.
+3. Provide credentials through `BOT_TOKEN`, `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` or the private `DATA_DIR/private/runtime.json` file. Existing database credentials are extracted during migration.
+4. Run:
 
 ```bash
 python3 main.py
 ```
 
 ## Docker Compose
-1. Configure `config.json` in project root.
+1. Put data in `./data` and userbot sessions in `./sessions`. Existing `./data/storage.sqlite3` is migrated on startup. Runtime credentials belong in `./data/private/runtime.json`; no root `config.json` mount is needed.
 2. Start bot:
    - `docker compose up -d --build`
 3. View logs:
@@ -87,18 +88,22 @@ python3 main.py
    - `docker compose down`
 
 ## SQLite storage
-Storage backend is SQLite (`storage.sqlite3`). Runtime data and app config are
-stored in SQLite; legacy `database*.json` files are not read.
+`catalog.sqlite3` contains plugins and iconpacks. `admin.sqlite3` contains requests,
+users, moderation, statistics and other service data. Secrets are stored separately
+in `private/runtime.json` or supplied through environment variables. The obsolete
+wall and `meta_store` table are not copied into the new databases.
 
-The bot can bootstrap storage path from `app_config` inside SQLite. You can
-override paths at runtime with env vars:
+Paths can be overridden with `DATA_DIR`, `CATALOG_SQLITE_PATH`,
+`ADMIN_SQLITE_PATH`, `LEGACY_SQLITE_PATH` and `BOT_SECRETS_FILE`.
+Bot backups include both databases and uploaded files. Tokens, API credentials,
+private runtime files and Telegram sessions are excluded. Restore both databases
+together and keep runtime credentials and sessions separately on the server.
 
-- `DATA_DIR`
-- `SQLITE_PATH`
+See [migration, security and future web admin architecture](docs/storage-layout.md).
 
 ## Userbot authorization (one-time)
 A Telegram Premium userbot publishes catalog posts (custom emoji, larger
-captions) alongside the bot. Before running authorization, set in the SQLite configuration:
+captions) alongside the bot. Before running authorization, set in the private runtime file (or use the corresponding environment variables):
 - `userbot.api_id`
 - `userbot.api_hash`
 

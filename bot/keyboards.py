@@ -5,7 +5,8 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from bot.callback_tokens import encode_slug
 from bot.icons import CATEGORY_ICONS, ICONS
 from bot.texts import t
-from request_store import request_callback_token, request_deeplink_token
+from bot.services.reason_templates import template_page, templates_allowed
+from request_store import get_request_by_callback_token, request_callback_token, request_deeplink_token
 
 
 def _btn(
@@ -1125,24 +1126,35 @@ def moderation_vote_reason_kb(
     lang: str = "ru",
 ) -> InlineKeyboardMarkup:
     token = request_callback_token(request_id)
+    allowed = templates_allowed(get_request_by_callback_token(request_id))
     anon_key = "kb_vote_anon_on" if anonymous else "kb_vote_anon_off"
     rows = [[_btn(t(anon_key, lang), callback_data=f"mvr:anon:{owner_id}:{token}",
                   icon="profile", style="success" if anonymous else None)]]
-    if has_templates:
+    if has_templates and allowed:
         rows.append([_btn(t("kb_vote_reason_tpl", lang), callback_data=f"mvr:tpl:{owner_id}:{token}", icon="file")])
     rows.append([_btn(t("kb_vote_reason_own", lang), callback_data=f"mvr:own:{owner_id}:{token}", icon="edit")])
-    if allow_no_reason:
+    if allow_no_reason and allowed:
         rows.append([_btn(t("kb_vote_reason_skip", lang), callback_data=f"mvr:none:{owner_id}:{token}", icon="yes")])
     rows.append([_btn(t("kb_vote_cancel", lang), callback_data=f"mvr:cancel:{owner_id}:{token}", icon="no", style="danger")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def moderation_vote_template_kb(request_id: str, owner_id: int, templates: List[str], lang: str = "ru") -> InlineKeyboardMarkup:
+def moderation_vote_template_kb(request_id: str, owner_id: int, templates: List[str], lang: str = "ru", page: int = 0) -> InlineKeyboardMarkup:
+    if not templates_allowed(get_request_by_callback_token(request_id)):
+        return moderation_vote_reason_kb(request_id, owner_id, lang=lang)
     token = request_callback_token(request_id)
+    _, indices, page, total = template_page(templates, page)
     rows = [
-        [_btn(f"{idx + 1}. {_tpl_label(tpl)}", callback_data=f"mvr:t:{owner_id}:{idx}:{token}", icon="file")]
-        for idx, tpl in enumerate(templates)
+        [_btn(str(idx + 1), callback_data=f"mvr:t:{owner_id}:{idx}:{token}", icon="file")]
+        for idx in indices
     ]
+    navigation = []
+    if page:
+        navigation.append(_btn("‹", callback_data=f"mvr:p:{owner_id}:{page - 1}:{token}"))
+    if page + 1 < total:
+        navigation.append(_btn("›", callback_data=f"mvr:p:{owner_id}:{page + 1}:{token}"))
+    if navigation:
+        rows.append(navigation)
     rows.append([_btn(t("btn_back", lang), callback_data=f"mvr:back:{owner_id}:{token}", style="danger", icon="back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -1167,19 +1179,20 @@ def admin_actions_kb(request_id: str, allow_ban: bool = False, lang: str = "ru")
     ])
 
 
-def admin_reject_kb(request_id: str, lang: str = "ru", show_votes: bool = False) -> InlineKeyboardMarkup:
+def admin_reject_kb(request_id: str, lang: str = "ru", show_votes: bool = False, allow_templates: bool = True) -> InlineKeyboardMarkup:
     votes_key = "kb_admin_reject_votes_on" if show_votes else "kb_admin_reject_votes_off"
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            _btn(t("kb_admin_reject_with_reason", lang), callback_data=f"adm:reject_comment:{request_callback_token(request_id)}", icon="edit"),
-            _btn(t("kb_admin_reject_silent", lang), callback_data=f"adm:reject_silent:{request_callback_token(request_id)}", icon="no"),
-        ],
-        [_btn(t("kb_admin_reject_template", lang), callback_data=f"adm:rejtpl_pick:{request_callback_token(request_id)}", icon="file")],
+    allow_templates = allow_templates and templates_allowed(get_request_by_callback_token(request_id))
+    rows = [[_btn(t("kb_admin_reject_with_reason", lang), callback_data=f"adm:reject_comment:{request_callback_token(request_id)}", icon="edit")]]
+    if allow_templates:
+        rows[0].append(_btn(t("kb_admin_reject_silent", lang), callback_data=f"adm:reject_silent:{request_callback_token(request_id)}", icon="no"))
+        rows.append([_btn(t("kb_admin_reject_template", lang), callback_data=f"adm:rejtpl_pick:{request_callback_token(request_id)}", icon="file")])
+    rows.extend([
         [_btn(t(votes_key, lang), callback_data=f"adm:reject_votes:{request_callback_token(request_id)}",
               icon=("yes" if show_votes else "no"), style=("success" if show_votes else None))],
         [_btn(t("kb_admin_rework", lang), callback_data=f"adm:rework:{request_callback_token(request_id)}", icon="updates")],
         [_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")],
     ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _tpl_label(text: str) -> str:
@@ -1191,16 +1204,27 @@ def admin_reject_templates_kb(
     templates: List[str],
     selected: List[int],
     lang: str = "ru",
+    page: int = 0,
 ) -> InlineKeyboardMarkup:
+    if not templates_allowed(get_request_by_callback_token(request_id)):
+        return admin_reject_kb(request_id, lang=lang, allow_templates=False)
     rows = []
-    for idx, tpl in enumerate(templates):
+    _, indices, page, total = template_page(templates, page)
+    for idx in indices:
         if idx in selected:
-            label = f"[{selected.index(idx) + 1}] {_tpl_label(tpl)}"
+            label = f"{idx + 1} ✓ [{selected.index(idx) + 1}]"
             style = "success"
         else:
-            label = f"{idx + 1}. {_tpl_label(tpl)}"
+            label = str(idx + 1)
             style = None
         rows.append([_btn(label, callback_data=f"adm:rejtpl_t:{request_callback_token(request_id)}:{idx}", style=style)])
+    navigation = []
+    if page:
+        navigation.append(_btn("‹", callback_data=f"adm:rejtpl_page:{request_callback_token(request_id)}:{page - 1}"))
+    if page + 1 < total:
+        navigation.append(_btn("›", callback_data=f"adm:rejtpl_page:{request_callback_token(request_id)}:{page + 1}"))
+    if navigation:
+        rows.append(navigation)
     if selected:
         rows.append([_btn(t("kb_admin_reject_tpl_send", lang),
                           callback_data=f"adm:rejtpl_go:{request_callback_token(request_id)}", icon="yes", style="success")])
@@ -1208,11 +1232,19 @@ def admin_reject_templates_kb(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def admin_reject_templates_cfg_kb(templates: List[str], kind: str = "reject", lang: str = "ru") -> InlineKeyboardMarkup:
+def admin_reject_templates_cfg_kb(templates: List[str], kind: str = "reject", lang: str = "ru", page: int = 0) -> InlineKeyboardMarkup:
+    _, indices, page, total = template_page(templates, page)
     rows = [
-        [_btn(f"{idx + 1}. {_tpl_label(tpl)}", callback_data=f"adm:rejtpl_del:{kind}:{idx}", icon="delete")]
-        for idx, tpl in enumerate(templates)
+        [_btn(str(idx + 1), callback_data=f"adm:rejtpl_del:{kind}:{idx}", icon="delete")]
+        for idx in indices
     ]
+    navigation = []
+    if page:
+        navigation.append(_btn("‹", callback_data=f"adm:rejtpl_cfgpage:{kind}:{page - 1}"))
+    if page + 1 < total:
+        navigation.append(_btn("›", callback_data=f"adm:rejtpl_cfgpage:{kind}:{page + 1}"))
+    if navigation:
+        rows.append(navigation)
     rows.append([_btn(t("kb_admin_rejtpl_add", lang), callback_data=f"adm:rejtpl_add:{kind}", icon="edit", style="success")])
     kinds = ("approve", "reject", "update_approve", "update_reject")
     for other in kinds:

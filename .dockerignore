@@ -10,3 +10,16 @@ data/
 sessions/
 uploads/
 config.json
+.env
+.env.*
+private/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.session
+*.session-journal
+runtime.json
+.runtime-*
+secrets/
+backups/
+*.zip

@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sqlite3
+import os
+import shutil
 import tempfile
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from storage import SQLITE_PATH, load_config, save_config
+from storage import (
+    ADMIN_SQLITE_PATH, CATALOG_SQLITE_PATH, LEGACY_SQLITE_PATH, SECRETS_PATH,
+    flush_all, load_config, save_config, snapshot_databases,
+)
 from bot.cache import get_admins_super, get_config, invalidate
 
 logger = logging.getLogger(__name__)
@@ -56,85 +60,68 @@ def cycle_interval(current_hours: int) -> int:
     return _INTERVAL_PRESETS[(idx + 1) % len(_INTERVAL_PRESETS)]
 
 
-def _userbot_session_path() -> Path:
-    ub = (get_config().get("userbot") or {}) if isinstance(get_config(), dict) else {}
-    session_dir = str(ub.get("session_dir") or "sessions").strip() or "sessions"
-    session_name = str(ub.get("session_name") or "userbot_session").strip() or "userbot_session"
-    return Path(session_dir) / f"{session_name}.session"
-
-
-def _snapshot_sqlite(src: Path, dst: Path) -> bool:
-    try:
-        src_conn = sqlite3.connect(str(src), timeout=30)
-        try:
-            dst_conn = sqlite3.connect(str(dst))
-            try:
-                src_conn.backup(dst_conn)
-            finally:
-                dst_conn.close()
-        finally:
-            src_conn.close()
-        return True
-    except Exception:
-        try:
-            import shutil
-            shutil.copy2(src, dst)
-            return True
-        except Exception:
-            logger.exception("backup: failed to snapshot %s", src)
-            return False
+def _include_upload(path: Path, relative: Path) -> bool:
+    parts = {part.lower() for part in relative.parts}
+    if parts & {"private", "sessions", "secrets", "backups"}:
+        return False
+    if any(part == ".env" or part.startswith(".env.") for part in parts):
+        return False
+    name = path.name.lower()
+    if name in {"runtime.json", "config.json"} or name.endswith((".session", ".session-journal", ".session-wal", ".session-shm")):
+        return False
+    excluded = {
+        Path(str(p) + suffix).resolve()
+        for p in (ADMIN_SQLITE_PATH, CATALOG_SQLITE_PATH, LEGACY_SQLITE_PATH, SECRETS_PATH)
+        for suffix in ("", "-wal", "-shm", "-journal")
+    }
+    return path.resolve() not in excluded
 
 
 def create_backup_zip() -> Path:
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     tmp_dir = Path(tempfile.mkdtemp(prefix="dbbackup_"))
-    snapshot = tmp_dir / f"storage_{ts}.sqlite3"
-    conn = sqlite3.connect(str(SQLITE_PATH), timeout=60)
     try:
-        conn.execute("VACUUM INTO ?", (str(snapshot),))
-    finally:
-        conn.close()
+        return _build_backup_zip(tmp_dir, ts)
+    except Exception:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
 
-    session_src = _userbot_session_path()
-    session_snap = None
-    if session_src.exists():
-        session_snap = tmp_dir / "userbot_session.session"
-        if not _snapshot_sqlite(session_src, session_snap):
-            session_snap = None
+
+def _build_backup_zip(tmp_dir: Path, ts: str) -> Path:
+    snapshots = snapshot_databases(tmp_dir)
 
     zip_path = tmp_dir / f"storage_backup_{ts}.zip"
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
-        zf.write(snapshot, arcname="storage.sqlite3")
-        if session_snap and session_snap.exists():
-            zf.write(session_snap, arcname="sessions/userbot_session.session")
+        for name, snapshot in snapshots.items():
+            zf.write(snapshot, arcname=name)
         try:
             from bot.helpers import get_uploads_dir
             uploads_dir = get_uploads_dir()
             if uploads_dir.exists():
                 for f in sorted(uploads_dir.rglob("*")):
-                    if f.is_file():
-                        zf.write(f, arcname=str(Path("uploads") / f.relative_to(uploads_dir)))
-        except Exception:
-            logger.exception("backup: failed to add uploads")
+                    if f.is_file() and not f.is_symlink():
+                        relative = f.relative_to(uploads_dir)
+                        if _include_upload(f, relative):
+                            zf.write(f, arcname=str(Path("uploads") / relative))
+        except Exception as exc:
+            raise RuntimeError("Unable to include uploads in backup") from exc
 
-    snapshot.unlink(missing_ok=True)
-    if session_snap:
-        session_snap.unlink(missing_ok=True)
+    os.chmod(zip_path, 0o600)
+    for snapshot in snapshots.values():
+        snapshot.unlink(missing_ok=True)
     return zip_path
 
 
 def _cleanup(zip_path: Path) -> None:
-    try:
-        zip_path.unlink(missing_ok=True)
-        zip_path.parent.rmdir()
-    except Exception:
-        pass
+    if zip_path.parent.name.startswith("dbbackup_"):
+        shutil.rmtree(zip_path.parent, ignore_errors=True)
 
 
 async def send_backup(bot, chat_id: int) -> bool:
     from aiogram.types import FSInputFile
 
     try:
+        await flush_all()
         zip_path = await asyncio.to_thread(create_backup_zip)
     except Exception:
         logger.exception("event=backup.create_failed")
@@ -154,6 +141,7 @@ async def send_backup_to_admins(bot) -> int:
     sent = 0
     zip_path: Optional[Path] = None
     try:
+        await flush_all()
         zip_path = await asyncio.to_thread(create_backup_zip)
     except Exception:
         logger.exception("event=backup.create_failed")

@@ -79,6 +79,15 @@ async def on_startup(bot: Bot) -> None:
     from storage import preload_storage
     await preload_storage()
 
+    from bot.services.reason_templates import upgrade_reason_templates
+    from storage import load_config, save_config, flush_all
+    from bot.cache import invalidate
+    config = load_config()
+    if upgrade_reason_templates(config):
+        save_config(config)
+        await flush_all()
+        invalidate("config")
+
     from bot.services.moderation_stats import sync_moderation_history
     await asyncio.to_thread(sync_moderation_history)
 

@@ -4,7 +4,6 @@ import argparse
 import asyncio
 import json
 import os
-import sqlite3
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,7 +20,6 @@ DOC_REQUESTS = "requests"
 DOC_USERS = "users"
 DOC_SUBSCRIPTIONS = "subscriptions"
 DOC_UPDATED = "updated"
-DOC_SNOWFLAKE = "snowflake"
 
 
 @dataclass(frozen=True)
@@ -37,7 +35,6 @@ DOC_SPECS = [
     DocSpec(DOC_REQUESTS, "databaserequests.json", {"requests": []}),
     DocSpec(DOC_SUBSCRIPTIONS, "databasesubscriptions.json", {"subscriptions": {}}),
     DocSpec(DOC_UPDATED, "databaseupdated.json", {"items": [], "seeded": False}),
-    DocSpec(DOC_SNOWFLAKE, "snowflake_db.json", {}),
 ]
 
 
@@ -101,11 +98,6 @@ def _count_rows(docs: Dict[str, Dict[str, Any]]) -> Dict[str, int]:
         for value in subs.values():
             subs_rows += len(value) if isinstance(value, list) else 0
 
-    snowflake = docs.get(DOC_SNOWFLAKE, {})
-    snowflake_chats = 0
-    if isinstance(snowflake, dict):
-        snowflake_chats = len([k for k in snowflake.keys() if str(k).lstrip("-").isdigit()])
-
     return {
         "plugins": len(docs.get(DOC_PLUGINS, {}).get("plugins", [])),
         "iconpacks": len(docs.get(DOC_ICONS, {}).get("iconpacks", [])),
@@ -114,7 +106,6 @@ def _count_rows(docs: Dict[str, Dict[str, Any]]) -> Dict[str, int]:
         "subscription_users": len(subs) if isinstance(subs, dict) else 0,
         "subscription_rows": subs_rows,
         "updated_items": len(docs.get(DOC_UPDATED, {}).get("items", [])),
-        "snowflake_chats": snowflake_chats,
     }
 
 
@@ -125,7 +116,7 @@ def _print_counts(prefix: str, counts: Dict[str, int]) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Migrate legacy JSON storage to SQLite")
+    parser = argparse.ArgumentParser(description="Migrate legacy JSON storage to catalog and admin SQLite databases")
     parser.add_argument(
         "--source-dir",
         default="shit/data",
@@ -133,8 +124,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--sqlite-path",
-        default="data/data/storage.sqlite3",
-        help="Target SQLite file (default: data/data/storage.sqlite3)",
+        default="data/storage.sqlite3",
+        help="Legacy SQLite path; catalog.sqlite3 and admin.sqlite3 are created alongside it (default: data/storage.sqlite3)",
     )
     parser.add_argument(
         "--strict",
@@ -145,11 +136,6 @@ def parse_args() -> argparse.Namespace:
         "--uploads-dir",
         default="",
         help="Optional uploads dir to rewrite request payload file_path values",
-    )
-    parser.add_argument(
-        "--keep-kv-store",
-        action="store_true",
-        help="Keep legacy kv_store table after successful migration",
     )
     return parser.parse_args()
 
@@ -177,18 +163,18 @@ def main() -> int:
     os.environ["DATA_DIR"] = str(sqlite_path.parent)
 
     from storage import (
+        ADMIN_SQLITE_PATH,
+        CATALOG_SQLITE_PATH,
         flush_all,
         load_icons,
         load_plugins,
         load_requests,
-        load_snowflake,
         load_subscriptions,
         load_updated,
         load_users,
         save_icons,
         save_plugins,
         save_requests,
-        save_snowflake,
         save_subscriptions,
         save_updated,
         save_users,
@@ -200,7 +186,6 @@ def main() -> int:
     save_users(docs.get(DOC_USERS, {"users": {}}))
     save_subscriptions(docs.get(DOC_SUBSCRIPTIONS, {"subscriptions": {}}))
     save_updated(docs.get(DOC_UPDATED, {"items": [], "seeded": False}))
-    save_snowflake(docs.get(DOC_SNOWFLAKE, {}))
     asyncio.run(flush_all())
 
     actual_docs = {
@@ -210,7 +195,6 @@ def main() -> int:
         DOC_USERS: load_users(),
         DOC_SUBSCRIPTIONS: load_subscriptions(),
         DOC_UPDATED: load_updated(),
-        DOC_SNOWFLAKE: load_snowflake(),
     }
 
     actual = _count_rows(actual_docs)
@@ -226,16 +210,8 @@ def main() -> int:
     else:
         print("Migration check passed")
 
-    if not args.keep_kv_store:
-        conn = sqlite3.connect(sqlite_path)
-        try:
-            conn.execute("DROP TABLE IF EXISTS kv_store")
-            conn.commit()
-        finally:
-            conn.close()
-        print("Dropped legacy table: kv_store")
-
-    print(f"SQLite path: {sqlite_path.resolve()}")
+    print(f"Catalog database: {CATALOG_SQLITE_PATH}")
+    print(f"Admin database: {ADMIN_SQLITE_PATH}")
     return 0
 
 

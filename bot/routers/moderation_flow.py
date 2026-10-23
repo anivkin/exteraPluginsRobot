@@ -12,6 +12,7 @@ from bot.formatting import plain_html, telegram_html, user_mention
 from bot.helpers import blank_and_delete, spawn_background
 from bot.keyboards import moderation_vote_reason_kb, moderation_vote_template_kb
 from bot.services.audit import add_audit_event
+from bot.services.reason_templates import template_page, templates_allowed
 from bot.services.moderation import (
     can_accept_vote,
     can_vote_in_context,
@@ -43,12 +44,15 @@ _prompt_timers: dict[str, asyncio.Task] = {}
 _prompt_worker: asyncio.Task | None = None
 
 
-def _vote_templates(vote: str | None, request_id: str | None = None) -> list[str]:
+def _vote_templates(vote: str | None, request_id: str | None = None, lang: str | None = None) -> list[str]:
     from bot.routers.admin_flow import _load_templates
 
     entry = get_request_by_id(request_id) if request_id else None
+    if request_id and not templates_allowed(entry, check_access=False):
+        return []
     prefix = "update_" if isinstance(entry, dict) and entry.get("type") == "update" else ""
-    return _load_templates(f"{prefix}{'approve' if str(vote) == 'yes' else 'reject'}")
+    kind = f"{prefix}{'approve' if str(vote) == 'yes' else 'reject'}"
+    return _load_templates(kind) if lang is None else _load_templates(kind, lang=lang)
 
 
 async def _refresh_inline_vote_message(bot, inline_message_id: str | None, entry: dict | None, request_id: str) -> None:
@@ -89,7 +93,7 @@ async def _refresh_vote_surfaces(bot, request_id: str, entry: dict, prompt: dict
 
 
 def _prompt_text(entry: dict | None, vote: str, lang: str, moderator: str) -> str:
-    key = "vote_reason_title" if require_vote_reason() else "vote_reason_title_optional"
+    key = "vote_reason_title" if require_vote_reason() or not templates_allowed(entry) else "vote_reason_title_optional"
     return t(
         key, lang,
         vote=t(f"vote_value_{vote}", lang),
@@ -268,8 +272,8 @@ async def start_vote_prompt(
                 request_id,
                 user_id,
                 anonymous=bool(stored_pending.get("anonymous")),
-                has_templates=bool(_vote_templates(vote, request_id)),
-                allow_no_reason=not require_vote_reason(),
+                has_templates=bool(_vote_templates(vote, request_id, lang)),
+                allow_no_reason=not require_vote_reason() and templates_allowed(entry),
                 lang=lang,
             ),
             disable_web_page_preview=True,
@@ -413,7 +417,7 @@ async def on_vote_reason_action(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer()
         return
 
-    if action == "t":
+    if action in {"t", "p"}:
         if len(parts) < 5:
             await cb.answer()
             return
@@ -433,6 +437,18 @@ async def on_vote_reason_action(cb: CallbackQuery, state: FSMContext) -> None:
         owner_name = str(owner.get("username") or "").strip()
         owner_label = f"@{owner_name}" if owner_name else (str(owner.get("name") or "").strip() or str(owner_id))
         await cb.answer(t("vote_not_yours", lang, moderator=owner_label), show_alert=True)
+        return
+
+    allowed = templates_allowed(entry)
+    if action in {"tpl", "t", "p", "none"} and not allowed:
+        if cb.message:
+            try:
+                await cb.message.edit_reply_markup(reply_markup=moderation_vote_reason_kb(
+                    request_id, owner_id, lang=lang,
+                ))
+            except Exception:
+                pass
+        await cb.answer(t("reason_templates_forbidden", lang), show_alert=True)
         return
 
     item = get_pending_vote(request_id, int(user.id))
@@ -466,8 +482,8 @@ async def on_vote_reason_action(cb: CallbackQuery, state: FSMContext) -> None:
                 request_id,
                 owner_id,
                 anonymous=new_value,
-                has_templates=bool(_vote_templates(item.get("vote"), request_id)),
-                allow_no_reason=not require_vote_reason(),
+                has_templates=bool(_vote_templates(item.get("vote"), request_id, lang)),
+                allow_no_reason=not require_vote_reason() and allowed,
                 lang=lang,
             ))
         except Exception:
@@ -476,19 +492,26 @@ async def on_vote_reason_action(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer(t("vote_anon_on_alert" if new_value else "vote_anon_off_alert", lang))
         return
 
-    if action == "tpl":
+    if action in {"tpl", "p"}:
         await _leave_vote_reason_state(state)
-        templates = _vote_templates(item.get("vote"), request_id)
+        templates = _vote_templates(item.get("vote"), request_id, lang)
         if not templates:
             await cb.answer(t("admin_rejtpl_empty", lang), show_alert=True)
             return
         _cancel_prompt_timer(request_id, int(user.id))
-        update_pending_vote(request_id, int(user.id), reason_in_progress=True)
+        try:
+            page = int(tpl_idx_raw) if action == "p" else 0
+        except ValueError:
+            await cb.answer(t("vote_expired", lang), show_alert=True)
+            return
+        body, _, page, total = template_page(templates, page)
+        update_pending_vote(request_id, int(user.id), reason_in_progress=True, template_options=templates)
         try:
             await cb.message.edit_text(
-                t("vote_reason_pick_tpl", lang, moderator=user_mention(user.id, user.username or "")),
+                t("vote_reason_pick_tpl", lang, moderator=user_mention(user.id, user.username or ""))
+                + "\n\n" + body + "\n\n" + t("reason_templates_page", lang, page=page + 1, total=total),
                 parse_mode=ParseMode.HTML,
-                reply_markup=moderation_vote_template_kb(request_id, owner_id, templates, lang=lang),
+                reply_markup=moderation_vote_template_kb(request_id, owner_id, templates, lang=lang, page=page),
             )
         except Exception:
             pass
@@ -512,8 +535,8 @@ async def on_vote_reason_action(cb: CallbackQuery, state: FSMContext) -> None:
                     request_id,
                     owner_id,
                     anonymous=bool(item.get("anonymous")),
-                    has_templates=bool(_vote_templates(item.get("vote"), request_id)),
-                    allow_no_reason=not require_vote_reason(),
+                    has_templates=bool(_vote_templates(item.get("vote"), request_id, lang)),
+                    allow_no_reason=not require_vote_reason() and allowed,
                     lang=lang,
                 ),
             )
@@ -524,7 +547,10 @@ async def on_vote_reason_action(cb: CallbackQuery, state: FSMContext) -> None:
         return
 
     if action == "t":
-        templates = _vote_templates(item.get("vote"), request_id)
+        templates = _vote_templates(item.get("vote"), request_id, lang)
+        if item.get("template_options") is not None and item["template_options"] != templates:
+            await cb.answer(t("reason_templates_changed", lang), show_alert=True)
+            return
         try:
             idx = int(tpl_idx_raw)
         except ValueError:
@@ -564,8 +590,8 @@ async def on_vote_reason_action(cb: CallbackQuery, state: FSMContext) -> None:
                     request_id,
                     owner_id,
                     anonymous=bool(item.get("anonymous")),
-                    has_templates=bool(_vote_templates(item.get("vote"), request_id)),
-                    allow_no_reason=not require_vote_reason(),
+                    has_templates=bool(_vote_templates(item.get("vote"), request_id, lang)),
+                    allow_no_reason=not require_vote_reason() and allowed,
                     lang=lang,
                 ),
             )

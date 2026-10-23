@@ -1312,25 +1312,6 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "en": f'{emoji_html("catalog", "🧩")} <b>Plugin Catalog</b>',
     },
 
-    "stenka_title": {"ru": "Социальная стенка", "en": "Social wall"},
-    "stenka_btn_leave_tag": {"ru": "оставить тег", "en": "leave tag"},
-    "stenka_inline_description": {"ru": "Оставь тег на стенке", "en": "Leave a tag on the wall"},
-    "stenka_alert_open_bot": {"ru": "Открой бота и отправь тег", "en": "Open the bot and send a tag"},
-    "stenka_prompt_enter_tag": {"ru": "Отправь тег (до 15 символов).", "en": "Send a tag (up to 15 chars)."},
-    "stenka_err_not_found": {"ru": "Стенка не найдена", "en": "Wall not found"},
-    "stenka_err_token_invalid": {"ru": "Ссылка устарела или неверная", "en": "Link expired or invalid"},
-    "stenka_err_tag_taken": {"ru": "Тег уже занят", "en": "Tag is already taken"},
-    "stenka_err_tag_too_long": {"ru": "Максимум 15 символов", "en": "Max 15 characters"},
-    "stenka_err_tag_format": {
-        "ru": "Тег может содержать только буквы, цифры и _",
-        "en": "Tag may contain only letters, digits and _",
-    },
-    "stenka_err_already_wrote": {
-        "ru": "Ты уже оставил тег: {tag}",
-        "en": "You already left a tag: {tag}",
-    },
-    "stenka_ok_saved": {"ru": "Готово", "en": "Done"},
-
     "btn_save_changes": {"ru": "Сохранить", "en": "Save"},
     "pending_saved": {"ru": "Сохранено.", "en": "Saved."},
 
@@ -1991,6 +1972,23 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "icons_title": {
         "ru": f'{emoji_html("art", "🎨")} <b>Паки иконок</b>',
         "en": f'{emoji_html("art", "🎨")} <b>Icon Packs</b>',
+    },
+    "btn_refresh": {"ru": "Обновить", "en": "Refresh"},
+    "reason_templates_forbidden": {
+        "ru": "Для апелляций и блокировок шаблоны недоступны. Укажите свою причину.",
+        "en": "Templates are unavailable for appeals and bans. Enter your own reason.",
+    },
+    "reason_templates_page": {
+        "ru": "Страница {page}/{total}. Нажмите номер причины.",
+        "en": "Page {page}/{total}. Tap a reason number.",
+    },
+    "reason_templates_selected": {
+        "ru": "Выбраны по порядку: {numbers}",
+        "en": "Selected in order: {numbers}",
+    },
+    "reason_templates_changed": {
+        "ru": "Набор причин изменился. Откройте выбор шаблонов заново.",
+        "en": "The reason list has changed. Open the template picker again.",
     },
 }
 
