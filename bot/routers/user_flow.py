@@ -21,6 +21,7 @@ from aiogram.types import (
 )
 
 from bot.context import get_language, get_lang
+from bot.languages import normalize_language
 from bot.callback_tokens import decode_slug, encode_slug
 from plugin_formats import plugin_file_limit
 from bot import limits
@@ -781,8 +782,8 @@ async def cmd_lang(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith("lang:"))
 async def on_lang(cb: CallbackQuery, state: FSMContext) -> None:
-    lang = cb.data.split(":")[1]
-    if lang not in ("ru", "en"):
+    lang = normalize_language(cb.data.split(":")[1], None)
+    if not lang:
         await cb.answer()
         return
 

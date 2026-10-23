@@ -132,18 +132,7 @@ _CHAT_PERMISSION_FIELDS = (
     "can_manage_topics",
 )
 
-_POST_LOCK_PERMISSION_LABELS = {
-    "can_send_messages": {"ru": "Сообщения", "en": "Messages"},
-    "can_send_audios": {"ru": "Аудио", "en": "Audio"},
-    "can_send_documents": {"ru": "Файлы", "en": "Files"},
-    "can_send_photos": {"ru": "Фото", "en": "Photos"},
-    "can_send_videos": {"ru": "Видео", "en": "Videos"},
-    "can_send_video_notes": {"ru": "Кружки", "en": "Video notes"},
-    "can_send_voice_notes": {"ru": "Голосовые", "en": "Voice notes"},
-    "can_send_polls": {"ru": "Опросы", "en": "Polls"},
-    "can_send_other_messages": {"ru": "Стикеры/GIF", "en": "Stickers/GIF"},
-    "can_add_web_page_previews": {"ru": "Превью ссылок", "en": "Link previews"},
-}
+_POST_LOCK_PERMISSION_FIELDS = frozenset(_CHAT_PERMISSION_FIELDS[:10])
 
 
 def _lang_for(target: Message | CallbackQuery | int | None) -> str:
@@ -279,9 +268,7 @@ def _is_valid_welcome_template(template: str) -> bool:
 
 
 def _onoff(value: bool, lang: str) -> str:
-    if lang == "en":
-        return "on" if value else "off"
-    return "вкл" if value else "выкл"
+    return t("state_on" if value else "state_off", lang)
 
 
 def _status_icon(value: bool) -> str:
@@ -316,9 +303,7 @@ def _settings_kb(chat_id: int, lang: str) -> InlineKeyboardMarkup:
     ]
 
     if not cleanup:
-        label = "задана" if reaction_emoji else "не задана"
-        if lang == "en":
-            label = "set" if reaction_emoji else "not set"
+        label = t("value_set" if reaction_emoji else "value_not_set", lang)
         rows.append(
             [_btn(f"{t('join_btn_join_reaction', lang)}: {label}", callback_data="join:reaction", icon="edit")]
         )
@@ -520,14 +505,13 @@ def _post_lock_permissions(chat_id: int) -> list[str]:
 
 
 def _post_lock_permission_label(field: str, lang: str) -> str:
-    labels = _POST_LOCK_PERMISSION_LABELS.get(field) or {}
-    return labels.get(lang) or labels.get("ru") or field
+    return t(f"join_permission_{field}", lang) if field in _POST_LOCK_PERMISSION_FIELDS else field
 
 
 def _panel_kb_post_permissions(chat_id: int, lang: str) -> InlineKeyboardMarkup:
     selected = set(_post_lock_permissions(chat_id))
     rows: list[list[InlineKeyboardButton]] = []
-    fields = [field for field in _CHAT_PERMISSION_FIELDS if field in _POST_LOCK_PERMISSION_LABELS]
+    fields = [field for field in _CHAT_PERMISSION_FIELDS if field in _POST_LOCK_PERMISSION_FIELDS]
     for i in range(0, len(fields), 2):
         row = []
         for field in fields[i : i + 2]:

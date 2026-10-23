@@ -86,7 +86,10 @@ def vote_counts(entry: dict | None) -> tuple[int, int, int]:
     return yes, no, yes + no
 
 
-def rejection_reasons(entry: dict | None) -> list[str]:
+def rejection_reasons(entry: dict | None, lang: str = "ru") -> list[str]:
+    from bot.services.reason_templates import localize_reason
+    from bot.texts import t
+
     payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
     votes = payload.get("moderation_votes") if isinstance(payload, dict) else {}
     out: list[str] = []
@@ -98,37 +101,42 @@ def rejection_reasons(entry: dict | None) -> list[str]:
         reason = str(item.get("reason") or "").strip()
         if reason:
             if item.get("anonymous"):
-                author = "Аноним"
+                author = t("vote_anonymous_name", lang)
             else:
                 try:
                     author = user_mention(int(item.get("user_id") or 0), str(item.get("username") or ""))
                 except (TypeError, ValueError):
                     author = ""
                 if not author:
-                    author = telegram_html(str(item.get("name") or "Модератор"))
-            out.append(f"{author} — {strip_blockquote_tags(telegram_html(reason))}")
+                    author = telegram_html(str(item.get("name") or t("vote_moderator_name", lang)))
+            out.append(f"{author} — {strip_blockquote_tags(telegram_html(localize_reason(reason, lang)))}")
     return out
 
 
-def _format_votes_block(votes: dict, header_label: str = "Голоса") -> str:
+def _format_votes_block(votes: dict, header_label: str | None = None, lang: str = "ru") -> str:
+    from bot.services.reason_templates import localize_reason
+    from bot.texts import t
+
+    header_label = header_label or t("vote_summary_label", lang)
     if not isinstance(votes, dict) or not votes:
         return f"<b>{header_label}:</b> 0"
     yes = sum(1 for v in votes.values() if isinstance(v, dict) and v.get("vote") == "yes")
     no = sum(1 for v in votes.values() if isinstance(v, dict) and v.get("vote") == "no")
     total = yes + no
-    header = f"<b>{header_label}:</b> {total}  |  За: {yes}  |  Отказано: {no}"
+    yes_label, no_label = t("vote_value_yes", lang), t("vote_value_no", lang)
+    header = f"<b>{header_label}:</b> {total}  |  {yes_label}: {yes}  |  {no_label}: {no}"
     details: list[str] = []
     for item in votes.values():
         if not isinstance(item, dict):
             continue
-        mark = "За" if item.get("vote") == "yes" else "Отказано"
+        mark = yes_label if item.get("vote") == "yes" else no_label
         if item.get("anonymous"):
-            display = "Аноним"
+            display = t("vote_anonymous_name", lang)
         else:
             username = str(item.get("username") or "").strip()
             display = f"@{username}" if username else str(item.get("name") or item.get("user_id") or "?")
         reason = str(item.get("reason") or "").strip()
-        reason_text = strip_blockquote_tags(telegram_html(reason)) if reason else "без причины"
+        reason_text = strip_blockquote_tags(telegram_html(localize_reason(reason, lang))) if reason else t("vote_no_reason", lang)
         details.append(f"• <b>{mark}</b> — {code_html(display)}:\n{reason_text}")
     if not details:
         return header
@@ -137,13 +145,15 @@ def _format_votes_block(votes: dict, header_label: str = "Голоса") -> str:
     return "\n".join([header, *details])
 
 
-def vote_summary(entry: dict | None) -> str:
+def vote_summary(entry: dict | None, lang: str = "ru") -> str:
     payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
     votes = payload.get("moderation_votes") if isinstance(payload, dict) else {}
-    return _format_votes_block(votes if isinstance(votes, dict) else {})
+    return _format_votes_block(votes if isinstance(votes, dict) else {}, lang=lang)
 
 
-def previous_rounds_text(entry: dict | None) -> str:
+def previous_rounds_text(entry: dict | None, lang: str = "ru") -> str:
+    from bot.texts import t
+
     payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
     rounds = payload.get("previous_vote_rounds") if isinstance(payload, dict) else None
     if not isinstance(rounds, list) or not rounds:
@@ -156,10 +166,10 @@ def previous_rounds_text(entry: dict | None) -> str:
         if not isinstance(votes, dict) or not votes:
             continue
         n = rnd.get("round") or (len(blocks) + 1)
-        blocks.append(_format_votes_block(votes, header_label=f"Раунд {n} (до доработки)"))
+        blocks.append(_format_votes_block(votes, header_label=t("vote_previous_round", lang, number=n), lang=lang))
     if not blocks:
         return ""
-    return "🗳 <b>Прошлое голосование:</b>\n" + "\n\n".join(blocks)
+    return t("vote_previous_title", lang) + "\n" + "\n\n".join(blocks)
 
 
 def archive_votes_for_rework(request_id: str) -> dict | None:

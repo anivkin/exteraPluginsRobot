@@ -133,13 +133,15 @@ def set_paid_broadcast_disable(user_id: int, paid: bool) -> None:
 
 
 def set_user_language(user_id: int, language: str) -> None:
+    from bot.languages import normalize_language
+
     _ensure_loaded_sync()
 
     user_key = str(user_id)
     if user_key not in _users_cache:
         _users_cache[user_key] = {}
 
-    _users_cache[user_key]["language"] = language.lower()
+    _users_cache[user_key]["language"] = normalize_language(language)
 
     try:
         loop = asyncio.get_running_loop()

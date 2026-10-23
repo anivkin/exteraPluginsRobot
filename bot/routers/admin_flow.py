@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from bot.services.plugin_files import plugin_document
 from bot.services import reason_templates
+from bot.languages import normalize_language, localized_value
 from bot.services.reason_templates import (
     TEMPLATE_CONFIG_KEYS, TEMPLATES_LIMIT, load_reason_templates,
     template_kind, template_page, templates_allowed,
@@ -298,18 +299,8 @@ def _tr(target: CallbackQuery | Message | int | None, key: str, **kwargs) -> str
 
 
 def _localized_block(entry: dict | None, lang: str) -> dict:
-    if not isinstance(entry, dict):
-        return {}
-    preferred = entry.get(lang)
-    if isinstance(preferred, dict):
-        return preferred
-    fallback_ru = entry.get("ru")
-    if isinstance(fallback_ru, dict):
-        return fallback_ru
-    fallback_en = entry.get("en")
-    if isinstance(fallback_en, dict):
-        return fallback_en
-    return {}
+    block = localized_value(entry, lang, {})
+    return block if isinstance(block, dict) else {}
 
 
 def _localized_name(entry: dict | None, lang: str) -> str:
@@ -319,9 +310,7 @@ def _localized_name(entry: dict | None, lang: str) -> str:
 
 
 def _localized_author(authors: dict | None, lang: str) -> str:
-    if not isinstance(authors, dict):
-        return ""
-    return authors.get(lang) or authors.get("ru") or authors.get("en") or ""
+    return localized_value(authors, lang, "")
 
 
 def _checked_on_value_now() -> str:
@@ -415,19 +404,19 @@ async def _send_review_document(cb: CallbackQuery, entry: dict, reply_message) -
         logger.exception("event=admin.review_file_failed request_id=%s", entry.get("id"))
 
 
-def _author_comment_block(entry: dict) -> str:
+def _author_comment_block(entry: dict, lang: str = "ru") -> str:
     from bot.services.request_context import author_context
 
     payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
-    return author_context(payload) if isinstance(payload, dict) else ""
+    return author_context(payload, lang=lang) if isinstance(payload, dict) else ""
 
 
-def _review_meta_block(entry: dict) -> str:
+def _review_meta_block(entry: dict, lang: str = "ru") -> str:
     parts: list[str] = []
     not_before = _publish_not_before_dt_utc(entry)
     if not_before:
         dt_str = not_before.astimezone(TZ_UTC_PLUS_5).strftime("%d.%m.%Y %H:%M")
-        parts.append(f"<b>Не публиковать раньше:</b> <code>{dt_str} UTC+5</code>")
+        parts.append(t("review_not_before", lang, date=f"{dt_str} UTC+5"))
     payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
     if isinstance(payload, dict):
         last_error = str(payload.get("last_publish_error") or "").strip()
@@ -436,14 +425,11 @@ def _review_meta_block(entry: dict) -> str:
             suffix = ""
             if error_at:
                 suffix = f" ({error_at.astimezone(TZ_UTC_PLUS_5).strftime('%d.%m.%Y %H:%M')} UTC+5)"
-            parts.append(
-                "<b>Последняя ошибка публикации"
-                f"{suffix}:</b>\n<blockquote expandable>{html.escape(last_error)}</blockquote>"
-            )
+            parts.append(t("review_last_error", lang, suffix=suffix, error=html.escape(last_error)))
     if isinstance(payload, dict) and payload.get("resubmitted_after_rework"):
-        parts.append("♻️ <b>Отправлено после доработки</b> (плагин уже был на модерации)")
-    parts.append(vote_summary(entry))
-    prev = previous_rounds_text(entry)
+        parts.append(t("review_after_rework", lang))
+    parts.append(vote_summary(entry, lang=lang))
+    prev = previous_rounds_text(entry, lang=lang)
     if prev:
         parts.append(prev)
     return "\n\n".join(parts)
@@ -499,8 +485,8 @@ async def _render_scheduled_view(target: CallbackQuery | Message, state: FSMCont
         return
     dt = _scheduled_dt_utc(entry)
     dt_str = dt.astimezone(TZ_UTC_PLUS_5).strftime("%d.%m.%Y %H:%M") if dt else "—"
-    meta = _review_meta_block(entry)
-    text = f"{_render_request_draft(entry)}\n\n<b>Отложено на:</b> <code>{dt_str}</code>"
+    meta = _review_meta_block(entry, lang=_lang_for(target))
+    text = f"{_render_request_draft(entry, lang=_lang_for(target))}\n\n<b>Отложено на:</b> <code>{dt_str}</code>"
     if meta:
         text = f"{text}\n\n{meta}"
     await state.update_data(scheduled_current_request=str(request_id))
@@ -810,45 +796,15 @@ def _admin_request_counts() -> dict[str, int]:
 
 
 def _admin_menu_text(lang: str) -> str:
-    c = _admin_request_counts()
-    if lang == "en":
-        return (
-            "<b>Admin Panel</b>\n\n"
-            f"Plugins: {c['plugin_pending']} pending, {c['scheduled_plugins']} scheduled\n"
-            f"Posts: {c['scheduled_posts']} scheduled"
-        )
-    return (
-        "<b>Админ-панель</b>\n\n"
-        f"Плагины: {c['plugin_pending']} заявок, {c['scheduled_plugins']} отложено\n"
-        f"Посты: {c['scheduled_posts']} по расписанию"
-    )
+    return t("admin_menu_counts", lang, **_admin_request_counts())
 
 
 def _plugins_section_text(lang: str) -> str:
-    c = _admin_request_counts()
-    if lang == "en":
-        return (
-            f"{t('admin_section_plugins', lang)}\n\n"
-            f"New: {c['new_plugins']}\n"
-            f"Updates: {c['updates']}\n"
-            f"Deletes: {c['deletes']}\n"
-            f"Scheduled: {c['scheduled_plugins']}"
-        )
-    return (
-        f"{t('admin_section_plugins', lang)}\n\n"
-        f"Новые: {c['new_plugins']}\n"
-        f"Обновления: {c['updates']}\n"
-        f"Удаления: {c['deletes']}\n"
-        f"Отложенные: {c['scheduled_plugins']}"
-    )
+    return t("admin_section_plugins", lang) + "\n\n" + t("admin_plugins_counts", lang, **_admin_request_counts())
 
 
 def _post_section_text(lang: str) -> str:
-    c = _admin_request_counts()
-    title = t("admin_btn_post", lang)
-    if lang == "en":
-        return f"<b>{title}</b>\n\nScheduled posts: {c['scheduled_posts']}"
-    return f"<b>{title}</b>\n\nПосты по расписанию: {c['scheduled_posts']}"
+    return f"<b>{t('admin_btn_post', lang)}</b>\n\n" + t("admin_posts_counts", lang, **_admin_request_counts())
 
 
 async def _render_config(cb: CallbackQuery, state: FSMContext) -> None:
@@ -1316,14 +1272,14 @@ async def _render_review(cb: CallbackQuery, state: FSMContext, token: str) -> No
 
     payload = entry.get("payload", {})
     if _is_appeal(entry):
-        draft_text = f"{_render_request_draft(entry)}\n\n{_review_meta_block(entry)}"
+        draft_text = f"{_render_request_draft(entry, lang=_lang_for(cb))}\n\n{_review_meta_block(entry, lang=_lang_for(cb))}"
         kb = admin_appeal_decision_kb(request_id, lang=lang) if _is_super_admin(cb) else None
         msg = await answer(cb, draft_text, kb, "appeal")
         if msg:
             await state.update_data(draft_message_id=msg.message_id)
         return
     if payload.get("submission_type") == "icon" or payload.get("icon"):
-        draft_text = f"{_render_request_draft(entry)}\n\n{_review_meta_block(entry)}"
+        draft_text = f"{_render_request_draft(entry, lang=_lang_for(cb))}\n\n{_review_meta_block(entry, lang=_lang_for(cb))}"
         if _is_super_admin(cb):
             kb = icon_draft_edit_kb(lang=lang)
         else:
@@ -1334,8 +1290,8 @@ async def _render_review(cb: CallbackQuery, state: FSMContext, token: str) -> No
             await state.update_data(draft_message_id=msg.message_id)
         return
 
-    draft_text = _render_request_draft(entry)
-    full_text = f"{draft_text}\n\n{_review_meta_block(entry)}"
+    draft_text = _render_request_draft(entry, lang=_lang_for(cb))
+    full_text = f"{draft_text}\n\n{_review_meta_block(entry, lang=_lang_for(cb))}"
     is_delete = entry.get("type") == "delete"
     msg = await answer(
         cb,
@@ -1520,13 +1476,13 @@ def _validate_request_before_publish(entry: dict | None) -> list[str]:
     return errors
 
 
-def _render_request_draft(entry: dict, *, include_context: bool = True) -> str:
+def _render_request_draft(entry: dict, *, include_context: bool = True, lang: str = "ru") -> str:
     payload = entry.get("payload", {})
     if _is_appeal(entry):
         username = str(payload.get("username") or "").strip()
         who = f"@{username}" if username else str(payload.get("user_id") or "—")
         return t(
-            "appeal_request_draft", "ru",
+            "appeal_request_draft", lang,
             user=who,
             uid=payload.get("user_id") or "—",
             text=strip_blockquote_tags(telegram_html(str(payload.get("appeal_text") or "—"))),
@@ -1542,7 +1498,7 @@ def _render_request_draft(entry: dict, *, include_context: bool = True) -> str:
         "description_en": payload.get("description_en") or fallback_desc,
     }
     text = build_channel_post({"payload": patched_payload})
-    context = _author_comment_block(entry) if include_context else ""
+    context = _author_comment_block(entry, lang=lang) if include_context else ""
     return text + ("\n\n" + context.strip() if context.strip() else "")
 
 
@@ -2969,15 +2925,15 @@ async def on_admin_rejected_detail(cb: CallbackQuery, state: FSMContext) -> None
         return
     status = str(entry.get("status") or "—")
     status_label = f"{_STATUS_ICONS.get(status, '•')} {_tr(cb, f'admin_audit_filter_{status}') if status in _AUDIT_FILTERS else status}"
-    text = _tr(cb, "admin_audit_status", status=status_label) + "\n\n" + _render_request_draft(entry)
+    text = _tr(cb, "admin_audit_status", status=status_label) + "\n\n" + _render_request_draft(entry, lang=_lang_for(cb))
     decision = _decision_line(cb, entry)
     if decision:
         text += "\n\n" + decision
     comment = _last_status_comment(entry)
     if comment:
-        text += "\n\n" + _tr(cb, "admin_rejected_reason", comment=strip_blockquote_tags(telegram_html(comment)))
+        text += "\n\n" + _tr(cb, "admin_rejected_reason", comment=strip_blockquote_tags(telegram_html(reason_templates.localize_reason(comment, _lang_for(cb)))))
     if vote_counts(entry)[2]:
-        text += "\n\n" + vote_summary(entry)
+        text += "\n\n" + vote_summary(entry, lang=_lang_for(cb))
     await answer(cb, text, admin_rejected_detail_kb(request_id, _lang_for(cb)), "admin")
     try:
         await cb.answer()
@@ -3055,7 +3011,7 @@ async def on_admin_rejected_appeal_detail(cb: CallbackQuery, state: FSMContext) 
     text = _tr(cb, "admin_rejected_appeal_detail", user=mention, uid=user_id, text=appeal_text)
     comment = _reject_comment(entry)
     if comment:
-        text += "\n\n" + _tr(cb, "admin_rejected_reason", comment=strip_blockquote_tags(telegram_html(comment)))
+        text += "\n\n" + _tr(cb, "admin_rejected_reason", comment=strip_blockquote_tags(telegram_html(reason_templates.localize_reason(comment, _lang_for(cb)))))
     await answer(cb, text, admin_rejected_appeal_detail_kb(request_id, _lang_for(cb)), "admin")
     await ack(cb)
 
@@ -4058,7 +4014,7 @@ async def on_admin_moderation_person(cb: CallbackQuery, state: FSMContext) -> No
                 cb,
                 "admin_moderation_stats_vote",
                 request=plain_html(event.get("request_name") or event.get("request_id") or "—"),
-                reason=plain_html(event.get("reason") or "—"),
+                reason=plain_html(reason_templates.localize_reason(event.get("reason") or "—", lang)),
             ))
     lines.append(_tr(cb, "admin_moderation_stats_decisions"))
     if not moderator["decisions"]:
@@ -5230,7 +5186,7 @@ async def on_admin_review(cb: CallbackQuery, state: FSMContext) -> None:
             current_request=request_id,
             draft_message_id=cb.message.message_id if cb.message else None,
         )
-        draft_text = f"{_render_request_draft(entry)}\n\n{_review_meta_block(entry)}"
+        draft_text = f"{_render_request_draft(entry, lang=_lang_for(cb))}\n\n{_review_meta_block(entry, lang=_lang_for(cb))}"
         if allow_publish:
             kb = icon_draft_edit_kb(lang=lang)
         else:
@@ -5292,7 +5248,7 @@ async def on_admin_review(cb: CallbackQuery, state: FSMContext) -> None:
             f"<b>От:</b> {user_link}"
         )
     else:
-        draft_text = _render_request_draft(entry)
+        draft_text = _render_request_draft(entry, lang=_lang_for(cb))
         header = {
             "update": "Обновление",
             "delete": "Удаление плагина",
@@ -5320,10 +5276,10 @@ async def on_admin_review(cb: CallbackQuery, state: FSMContext) -> None:
                              media_count=len(_comment_media_of_entry(entry)))
 
     if request_type in {"update", "delete"} or submission_type == "icon":
-        context = _author_comment_block(entry)
+        context = _author_comment_block(entry, lang=lang)
         if context:
             text += "\n\n" + context
-    text = f"{text}\n\n{_review_meta_block(entry)}"
+    text = f"{text}\n\n{_review_meta_block(entry, lang=_lang_for(cb))}"
     review_img = {"update": "update", "delete": "delete"}.get(entry.get("type"), "new")
     review_msg = await answer(cb, text, kb, review_img)
 
@@ -5418,7 +5374,7 @@ async def on_admin_prepublish(cb: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminFlow.reviewing)
     await state.update_data(current_request=request_id)
 
-    draft_text = f"{_render_request_draft(entry)}\n\n{_review_meta_block(entry)}"
+    draft_text = f"{_render_request_draft(entry, lang=_lang_for(cb))}\n\n{_review_meta_block(entry, lang=_lang_for(cb))}"
     payload = entry.get("payload", {})
     include_schedule = _can_schedule_request(entry)
     not_before = _publish_not_before_dt_utc(entry)
@@ -5488,7 +5444,7 @@ async def on_admin_icon_back(cb: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     entry = get_request_by_id(data.get("current_request", ""))
     if entry:
-        draft_text = _render_request_draft(entry)
+        draft_text = _render_request_draft(entry, lang=_lang_for(cb))
         await answer(cb, draft_text, icon_draft_edit_kb(lang=lang), "iconpacks")
     await ack(cb)
 
@@ -5549,7 +5505,7 @@ async def on_admin_icon_field_value(message: Message, state: FSMContext) -> None
     await state.set_state(AdminFlow.reviewing)
     entry = get_request_by_id(request_id)
     if entry:
-        draft_text = _render_request_draft(entry)
+        draft_text = _render_request_draft(entry, lang=_lang_for(message))
         await answer(message, draft_text, icon_draft_edit_kb(lang=lang), "iconpacks")
 
 
@@ -5589,7 +5545,7 @@ async def on_admin_draft_edit(cb: CallbackQuery, state: FSMContext) -> None:
 
         update_request_payload(request_id, {"checked_on": _checked_on_value_now()})
         entry = get_request_by_id(request_id) or entry
-        draft_text = _render_request_draft(entry)
+        draft_text = _render_request_draft(entry, lang=_lang_for(cb))
         payload = entry.get("payload", {})
         checked_on_set = bool(str(payload.get("checked_on") or "").strip())
         include_schedule = _can_schedule_request(entry)
@@ -5659,7 +5615,7 @@ async def on_admin_catalog_edit(cb: CallbackQuery, state: FSMContext) -> None:
 
         update_request_payload(request_id, {"checked_on": _checked_on_value_now()})
         entry = get_request_by_id(request_id) or entry
-        draft_text = _render_request_draft(entry)
+        draft_text = _render_request_draft(entry, lang=_lang_for(cb))
         await answer(
             cb,
             draft_text,
@@ -5943,7 +5899,7 @@ async def on_admin_draft_category(cb: CallbackQuery, state: FSMContext) -> None:
         include_schedule = _can_schedule_request(entry)
         await answer(
             cb,
-            _render_request_draft(entry),
+            _render_request_draft(entry, lang=_lang_for(cb)),
             draft_edit_kb(
                 "adm",
                 _tr(cb, "admin_submit_publish"),
@@ -6027,7 +5983,7 @@ async def on_admin_draft_field_value(message: Message, state: FSMContext) -> Non
     if entry:
         data = await state.get_data()
         draft_message_id = data.get("draft_message_id")
-        draft_text = _render_request_draft(entry)
+        draft_text = _render_request_draft(entry, lang=_lang_for(message))
         include_schedule = _can_schedule_request(entry)
         if draft_message_id:
             try:
@@ -6458,10 +6414,10 @@ async def _finalize_rejection(
     author_lang = get_lang(user_id)
     item = payload.get("plugin") or payload.get("icon") or {}
     plugin_name = plain_html(item.get("name") or "—")
-    reason = strip_blockquote_tags(comment) or "—"
+    reason = strip_blockquote_tags(reason_templates.localize_reason(comment, author_lang)) or "—"
     notify_text = t("notify_rejected", author_lang, name=plugin_name, comment=reason)
     if show_votes:
-        reasons = rejection_reasons(entry)
+        reasons = rejection_reasons(entry, lang=author_lang)
         if reasons:
             reasons_text = "\n".join(f"• {r}" for r in reasons)
             notify_text += "\n\n" + t("notify_rejected_votes", author_lang, reasons=reasons_text)
@@ -6721,7 +6677,8 @@ async def on_admin_reject_silent(cb: CallbackQuery, state: FSMContext) -> None:
         if data.get("reject_show_votes"):
             payload = entry.get("payload", {})
             user_id = payload.get("user_id")
-            reasons = rejection_reasons(entry)
+            author_lang = get_lang(user_id) if user_id else "ru"
+            reasons = rejection_reasons(entry, lang=author_lang)
             if user_id and reasons:
                 author_lang = get_lang(user_id)
                 item = payload.get("plugin") or payload.get("icon") or {}
@@ -7485,11 +7442,11 @@ _QUIZ_PAGE_SIZE = 8
 
 
 def _quiz_edit_lang(data: dict) -> str:
-    return "en" if str(data.get("quiz_edit_lang") or "ru") == "en" else "ru"
+    return normalize_language(data.get("quiz_edit_lang"))
 
 
 def _quiz_block(question: dict, lang: str) -> tuple[str, list[str]]:
-    block = question.get(lang) or question.get("ru") or question.get("en") or ["", []]
+    block = localized_value(question, lang, ["", []])
     return str(block[0]), list(block[1])
 
 
@@ -7565,7 +7522,11 @@ async def on_admin_quiz_lang(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
     parts = cb.data.split(":")
-    await state.update_data(quiz_edit_lang="en" if parts[4] == "en" else "ru")
+    edit_lang = normalize_language(parts[4], None)
+    if not edit_lang:
+        await ack(cb)
+        return
+    await state.update_data(quiz_edit_lang=edit_lang)
     await _render_quiz_item(cb, state, parts[3])
     await ack(cb)
 
@@ -7741,8 +7702,8 @@ async def on_admin_request_file_upload(message: Message, state: FSMContext) -> N
     await state.set_state(AdminFlow.reviewing)
     await answer(
         message,
-        f"{_render_request_draft(get_request_by_id(request_id) or entry)}\n\n"
-        f"{_review_meta_block(get_request_by_id(request_id) or entry)}",
+        f"{_render_request_draft(get_request_by_id(request_id) or entry, lang=_lang_for(message))}\n\n"
+        f"{_review_meta_block(get_request_by_id(request_id) or entry, lang=_lang_for(message))}",
         admin_review_kb(
             request_id,
             payload.get("user_id", 0),

@@ -39,3 +39,5 @@ runtime.json
 .runtime-*
 secrets/
 private/
+/tests
+/docs

@@ -26,6 +26,7 @@ from bot.routers import joinly_flow
 from bot.cache import get_admins_super, get_categories, get_icons
 from bot.constants import PAGE_SIZE
 from bot.context import get_language, get_lang
+from bot.languages import localized_value
 from bot.callback_tokens import decode_slug, encode_slug
 from bot.formatting import quote_html
 from bot.helpers import ack, answer, link_preview_options, strip_html
@@ -288,30 +289,26 @@ def _request_inline_file_caption(request_id: str, file_kind: str, message_text: 
 
 
 def _toggle_label(value: bool, lang: str) -> str:
-    if lang == "en":
-        return "on" if value else "off"
-    return "вкл" if value else "выкл"
+    return t("state_on" if value else "state_off", lang)
 
 
 def build_plugin_preview(entry: Dict[str, Any], lang: str) -> str:
-    locale = entry.get(lang) or entry.get("ru") or entry.get("en") or {}
+    locale = localized_value(entry, lang, {})
     authors = entry.get("authors", {})
     raw_blocks = entry.get("raw_blocks", {}) or {}
-    raw_locale = raw_blocks.get(lang) or raw_blocks.get("ru") or {}
+    raw_locale = localized_value(raw_blocks, lang, {})
     author_channels = entry.get("author_channels", {}) or {}
 
     name_value = locale.get("name") or entry.get("slug", "?")
     author = (
         (raw_locale.get("author") if isinstance(raw_locale, dict) else None)
-        or authors.get(lang)
-        or authors.get("ru")
+        or localized_value(authors, lang)
         or (raw_locale.get("author_channel") if isinstance(raw_locale, dict) else None)
         or t("catalog_inline_no_description", lang)
     )
     author_channel = (
         (raw_locale.get("author_channel") if isinstance(raw_locale, dict) else None)
-        or author_channels.get(lang)
-        or author_channels.get("ru")
+        or localized_value(author_channels, lang)
     )
     count = entry.get("count")
     if count is None:
@@ -349,16 +346,15 @@ def _inline_description(value: str) -> str:
 
 
 def build_inline_preview(entry: Dict[str, Any], lang: str, kind: str = "plugin") -> str:
-    locale = entry.get(lang) or entry.get("ru") or entry.get("en") or {}
+    locale = localized_value(entry, lang, {})
     authors = entry.get("authors", {})
     raw_blocks = entry.get("raw_blocks", {}) or {}
-    raw_locale = raw_blocks.get(lang) or raw_blocks.get("ru") or {}
+    raw_locale = localized_value(raw_blocks, lang, {})
 
     name = html.escape(locale.get("name") or entry.get("slug", "?"))
     author_value = (
         (raw_locale.get("author") if isinstance(raw_locale, dict) else None)
-        or authors.get(lang)
-        or authors.get("ru")
+        or localized_value(authors, lang)
         or (raw_locale.get("author_channel") if isinstance(raw_locale, dict) else None)
         or t("catalog_inline_no_description", lang)
     )
@@ -613,7 +609,7 @@ async def on_catalog_category(cb: CallbackQuery, state: FSMContext) -> None:
         slug = plugin.get("slug")
         if not slug:
             continue
-        locale = plugin.get(lang) or plugin.get("ru") or {}
+        locale = localized_value(plugin, lang, {})
         name = locale.get("name") or slug
         items.append((name, f"plugin:{encode_slug(slug)}"))
 
@@ -836,7 +832,7 @@ async def _render_search_results(target: Message | CallbackQuery, state: FSMCont
     items = []
     for slug in page_slugs:
         plugin = find_plugin_by_slug(slug)
-        locale = (plugin.get(lang) if plugin else None) or (plugin.get("ru") if plugin else None) or {}
+        locale = localized_value(plugin, lang, {})
         name = (locale.get("name") if isinstance(locale, dict) else None) or slug
         items.append((name, f"plugin:{encode_slug(slug)}"))
 
@@ -886,7 +882,7 @@ async def on_icons_list(cb: CallbackQuery, state: FSMContext) -> None:
         slug = icon.get("slug")
         if not slug:
             continue
-        locale = icon.get(lang) or icon.get("ru") or {}
+        locale = localized_value(icon, lang, {})
         name = locale.get("name") or slug
         items.append((name, f"icon:{encode_slug(slug)}"))
 
@@ -1053,7 +1049,7 @@ async def _show_subscriptions(target: CallbackQuery | Message, state: FSMContext
             continue
 
         plugin = find_plugin_by_slug(slug)
-        locale = plugin.get(lang) if plugin else {}
+        locale = localized_value(plugin, lang, {})
         name = (locale.get("name") if locale else None) or slug
         items.append((name, f"plugin:{encode_slug(slug)}"))
 
@@ -1467,7 +1463,7 @@ async def on_my_items(cb: CallbackQuery, state: FSMContext) -> None:
             entity = find_icon_by_slug(slug)
 
         if entity:
-            locale = entity.get(lang) or entity.get("ru") or {}
+            locale = localized_value(entity, lang, {})
             name = locale.get("name") or slug
             if kind == "plugins":
                 all_items.append((name, f"myplugin:{encode_slug(slug)}"))
@@ -1582,7 +1578,7 @@ async def on_inline(query: InlineQuery) -> None:
         if not slug:
             continue
 
-        locale = plugin.get(lang) or plugin.get("ru") or {}
+        locale = localized_value(plugin, lang, {})
         name = locale.get("name") or slug
         category_key = str(plugin.get("category") or "").strip()
         category_fallback = CATEGORY_FALLBACKS.get(category_key, "")
@@ -1624,7 +1620,7 @@ async def on_inline(query: InlineQuery) -> None:
         if not slug:
             continue
 
-        locale = icon.get(lang) or icon.get("ru") or {}
+        locale = localized_value(icon, lang, {})
         name = locale.get("name") or slug
         preview = build_inline_preview(icon, lang, "icon")
         description = ""

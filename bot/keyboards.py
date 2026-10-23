@@ -5,6 +5,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from bot.callback_tokens import encode_slug
 from bot.icons import CATEGORY_ICONS, ICONS
 from bot.texts import t
+from bot.languages import LANGUAGE_NAMES, SUPPORTED_LANGUAGES, category_label
 from bot.services.reason_templates import template_page, templates_allowed
 from request_store import get_request_by_callback_token, request_callback_token, request_deeplink_token
 
@@ -32,10 +33,8 @@ def _btn(
 
 
 def language_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🇷🇺 Русский", callback_data="lang:ru"),
-        InlineKeyboardButton(text="🇺🇸 English", callback_data="lang:en"),
-    ]])
+    buttons = [_btn(LANGUAGE_NAMES[code], callback_data=f"lang:{code}", icon="settings") for code in SUPPORTED_LANGUAGES]
+    return InlineKeyboardMarkup(inline_keyboard=[buttons[:2], buttons[2:]])
 
 
 def main_menu_kb(lang: str) -> InlineKeyboardMarkup:
@@ -167,7 +166,7 @@ def admin_scheduled_item_kb(request_id: str, lang: str = "ru") -> InlineKeyboard
 def categories_kb(categories: list, lang: str) -> InlineKeyboardMarkup:
     buttons = []
     for cat in categories:
-        label = cat.get(lang) or cat.get("ru") or cat.get("key")
+        label = category_label(cat, lang)
         buttons.append(_btn(
             label,
             callback_data=f"submit:cat:{cat.get('key')}",
@@ -188,9 +187,7 @@ def broadcast_kb(
 ) -> InlineKeyboardMarkup:
     toggle_cb = "profile:broadcast:toggle"
     if paid:
-        state_label = "включена" if enabled else "выключена"
-        if lang == "en":
-            state_label = "on" if enabled else "off"
+        state_label = t("state_on" if enabled else "state_off", lang)
         toggle_label = f"{t('btn_broadcast_paid', lang)}: {state_label}"
     else:
         toggle_label = t("btn_broadcast_on", lang) if enabled else t("btn_broadcast_off", lang)
@@ -289,7 +286,7 @@ def draft_edit_kb(
     if include_checked_on:
         label = t("kb_field_checked_on", lang)
         if checked_on_set:
-            label = f"{label}: да" if lang == "ru" else f"{label}: yes"
+            label = f"{label}: {t('value_yes', lang)}"
         rows.append([_btn(label, callback_data=f"{prefix}:edit:checked_on", icon="yes")])
     if include_file:
         rows.append([_btn(t("kb_field_file", lang), callback_data=f"{prefix}:edit:file", icon="file")])
@@ -335,7 +332,7 @@ def description_lang_kb() -> InlineKeyboardMarkup:
 def draft_category_kb(prefix: str, categories: list, lang: str = "ru") -> InlineKeyboardMarkup:
     buttons = []
     for cat in categories:
-        label = cat.get(lang) or cat.get("ru") or cat.get("en") or cat.get("key")
+        label = category_label(cat, lang)
         buttons.append(
             _btn(
                 label,
@@ -379,7 +376,7 @@ def catalog_main_kb(categories: list, lang: str, source_label: str | None = None
     
     cat_buttons = []
     for cat in categories:
-        label = cat.get(lang) or cat.get("ru")
+        label = category_label(cat, lang)
         cat_buttons.append(_btn(
             text=label,
             callback_data=f"cat:{cat.get('key')}:0",
@@ -618,7 +615,7 @@ def admin_quiz_list_kb(items: List[Tuple[str, str]], page: int, total_pages: int
 
 
 def admin_quiz_item_kb(question_id: str, lang: str = "ru", edit_lang: str = "ru") -> InlineKeyboardMarkup:
-    other = "en" if edit_lang == "ru" else "ru"
+    other = SUPPORTED_LANGUAGES[(SUPPORTED_LANGUAGES.index(edit_lang) + 1) % len(SUPPORTED_LANGUAGES)]
     return InlineKeyboardMarkup(inline_keyboard=[
         [_btn(t("admin_quiz_btn_lang", lang, value=edit_lang.upper()),
               callback_data=f"adm:quiz:lang:{question_id}:{other}", icon="settings")],

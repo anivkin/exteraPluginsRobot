@@ -61,13 +61,19 @@ Managed via **`/settings`** in a group or **Profile → Joinly** (chat admins on
 ## Commands
 - `/start` — main menu, also handles deep links
 - `/admin` — admin panel
-- `/lang` — switch language (Russian / English)
+- `/lang` — switch language (Russian / English / Ukrainian / Simplified Chinese)
 - `/new` — resend active requests to the moderation forum (super admins)
 - `/settings` — Joinly settings in a group
 - `/unlockchat` — unlock a chat
 
 ## Setup
 Requires **Python 3.12**.
+
+Interface texts are stored separately in `bot/locales/{ru,en,uk,zh}.json`.
+Moderation reason translations and quiz seeds are in the `reasons/` and `quiz/`
+subdirectories. Include the entire `bot/locales/` directory when deploying.
+Template reasons are shown in the recipient's selected language; custom text is
+preserved as written.
 
 1. `pip install -r requirements.txt`
 2. Set `DATA_DIR` to your data directory. An existing `storage.sqlite3` is migrated automatically; keep a backup and stop the old bot first.

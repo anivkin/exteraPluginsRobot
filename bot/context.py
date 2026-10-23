@@ -4,6 +4,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot.texts import DEFAULT_LANGUAGE
+from bot.languages import normalize_language
 from user_store import get_user_language
 
 
@@ -11,13 +12,13 @@ def get_lang(user_id: Optional[int]) -> str:
     if not user_id:
         return DEFAULT_LANGUAGE
     lang = get_user_language(user_id)
-    return lang if lang in ("ru", "en") else DEFAULT_LANGUAGE
+    return normalize_language(lang, DEFAULT_LANGUAGE)
 
 
 async def get_language(target: Message | CallbackQuery, state: FSMContext) -> str:
     data = await state.get_data()
-    lang = data.get("lang")
-    if lang in ("ru", "en"):
+    lang = normalize_language(data.get("lang"), None)
+    if lang:
         return lang
 
     user = target.from_user

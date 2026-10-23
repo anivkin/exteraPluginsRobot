@@ -1,0 +1,182 @@
+{
+  "min_version": [
+    "What is the minimum client version allowed for a new plugin?",
+    [
+      "12.10.6 or higher",
+      "12.1.1 or higher",
+      "Any, as long as it works",
+      "12.5.1 or higher"
+    ]
+  ],
+  "file_size": [
+    "What is the maximum plugin file size?",
+    [
+      "8/100 MB",
+      "2 MB",
+      "50 MB",
+      "There is no limit"
+    ]
+  ],
+  "update_version": [
+    "What version must an update have?",
+    [
+      "Strictly higher than the previous one",
+      "The same as the previous one",
+      "Any, the version isn't checked",
+      "Lower, if it's a rollback"
+    ]
+  ],
+  "spam": [
+    "A plugin does mass messaging across chats. What happens?",
+    [
+      "Fully banned, it will never be published",
+      "Published if the description warns about it",
+      "Sent back for changes",
+      "Published for trusted authors only"
+    ]
+  ],
+  "online_tracking": [
+    "A plugin tracks when a person is online even with a hidden status. This is:",
+    [
+      "Banned — it harms users",
+      "Allowed, the data is public",
+      "Allowed with a warning",
+      "Allowed for your own contacts only"
+    ]
+  ],
+  "autoupdate": [
+    "When may a plugin download add-ons and self-update?",
+    [
+      "Only as an explicit setting that is off by default",
+      "Always, it's convenient",
+      "If the author warns in the description",
+      "If it downloads from GitHub"
+    ]
+  ],
+  "fake_badge": [
+    "A plugin draws a fake verification badge. This is:",
+    [
+      "Banned — forging trust elements",
+      "Allowed, it's local only",
+      "Allowed if it's a joke",
+      "Allowed for your own channel"
+    ]
+  ],
+  "duplicate": [
+    "Your plugin repeats an already published one. What is required?",
+    [
+      "A clear advantage: new features, better stability, or the analog is abandoned",
+      "Nothing, the catalog already has similar ones",
+      "A different name is enough",
+      "A different UI color is enough"
+    ]
+  ],
+  "abandoned": [
+    "How long must an analog be un-updated to count as abandoned?",
+    [
+      "Over 4 months and partly broken on the current version",
+      "Over 2 weeks",
+      "Over 1 month",
+      "Over a year"
+    ]
+  ],
+  "too_simple": [
+    "A plugin changes a single UI color. Most likely:",
+    [
+      "Rejected — the task is too simple",
+      "Published, it's customization",
+      "Published if it has settings",
+      "Published if the code is clean"
+    ]
+  ],
+  "raw_impl": [
+    "Great idea, but the plugin crashes and lags. Result:",
+    [
+      "Rejected — you may fix it and resubmit",
+      "Published, the idea matters more",
+      "Published marked as \"beta\"",
+      "The author gets banned"
+    ]
+  ],
+  "ai_code": [
+    "May you use AI to write a plugin?",
+    [
+      "Yes, if you understand the code, tested it and take responsibility",
+      "No, AI is fully banned",
+      "Yes, testing isn't required",
+      "Only if you mention it in the description"
+    ]
+  ],
+  "fork_allowed": [
+    "When is a fork of someone's plugin allowed?",
+    [
+      "Author's permission, or original authorship kept, or the original is abandoned",
+      "Always, the code is open",
+      "If you rename it",
+      "If the original author didn't reply within a day"
+    ]
+  ],
+  "fork_marks": [
+    "What must a fork submission state?",
+    [
+      "That it's a fork, the original author, and what exactly changed",
+      "Only the new name",
+      "Only a link to the original",
+      "Nothing if the code was rewritten"
+    ]
+  ],
+  "fork_cosmetic": [
+    "A fork only renamed things and changed a color. This is:",
+    [
+      "Not accepted — a cosmetic-only fork",
+      "Accepted, it's independent work",
+      "Accepted with the author's consent",
+      "Accepted if the original is old"
+    ]
+  ],
+  "decision": [
+    "How is a submission decided?",
+    [
+      "Moderators vote Yes/Reject stating a reason",
+      "One admin decides without explanation",
+      "Automatically by file size",
+      "By the author's subscriber count"
+    ]
+  ],
+  "after_reject": [
+    "Your plugin was rejected. What does it mean?",
+    [
+      "Rejection ≠ ban: you may fix it and resubmit",
+      "The author is banned from the ecosystem",
+      "The plugin will never be accepted",
+      "You must wait a month before retrying"
+    ]
+  ],
+  "description": [
+    "What must a plugin description contain?",
+    [
+      "What it does and how to use it — in Russian and/or English",
+      "Only the name",
+      "Only a screenshot",
+      "A link to the sources"
+    ]
+  ],
+  "joke": [
+    "A plugin is an inside-joke meme with no practical use. Usually:",
+    [
+      "Rejected — exception: genuinely funny and relevant meme plugins",
+      "Always published, humor matters",
+      "Published if the author is known",
+      "The author gets banned"
+    ]
+  ],
+  "hardcode": [
+    "A plugin hardcodes an exchange rate that should update. This is:",
+    [
+      "A rejection reason — raw implementation",
+      "Fine, it's simpler",
+      "Fine if updated manually",
+      "Fine for a first version"
+    ]
+  ]
+}

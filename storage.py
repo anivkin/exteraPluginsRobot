@@ -12,6 +12,9 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from functools import lru_cache
+
+from bot.languages import SUPPORTED_LANGUAGES, localized_value, normalize_language
 
 from runtime_config import merge_secrets, persisted_secrets, read_secrets, split_config, write_secrets
 import storage_layout as _layout
@@ -1001,7 +1004,7 @@ def _normalize_quiz_question(item: Any) -> Optional[Dict[str, Any]]:
     result: Dict[str, Any] = {"id": str(item.get("id") or "").strip()}
     if not result["id"]:
         return None
-    for lang in ("ru", "en"):
+    for lang in SUPPORTED_LANGUAGES:
         block = item.get(lang)
         if isinstance(block, (list, tuple)) and len(block) == 2:
             text, options = block
@@ -1013,22 +1016,51 @@ def _normalize_quiz_question(item: Any) -> Optional[Dict[str, Any]]:
         text = str(text or "").strip()
         if text and len(options) >= 2:
             result[lang] = [text, options]
-    return result if result.get("ru") or result.get("en") else None
+    return result if any(result.get(lang) for lang in SUPPORTED_LANGUAGES) else None
+
+
+@lru_cache(maxsize=1)
+def _quiz_translations() -> dict:
+    questions = {}
+    for lang in SUPPORTED_LANGUAGES:
+        path = Path(__file__).resolve().parent / "bot/locales/quiz" / f"{lang}.json"
+        for question_id, block in json.loads(path.read_text(encoding="utf-8")).items():
+            questions.setdefault(question_id, {"id": question_id})[lang] = block
+    return questions
+
+
+def _add_quiz_translations(items: list) -> bool:
+    changed = False
+    defaults = _quiz_translations()
+    for item in items:
+        seed = defaults.get(item["id"])
+        originals = [lang for lang in ("ru", "en") if item.get(lang)]
+        if not seed or not originals or any(item[lang] != seed.get(lang) for lang in originals):
+            continue
+        for lang in SUPPORTED_LANGUAGES:
+            if not item.get(lang) and seed.get(lang):
+                item[lang] = deepcopy(seed[lang])
+                changed = True
+    return changed
 
 
 def quiz_seed_questions() -> List[Dict[str, Any]]:
     try:
         raw = json.loads(_QUIZ_SEED_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return []
+    except FileNotFoundError:
+        raw = list(_quiz_translations().values())
     items = raw.get("questions") if isinstance(raw, dict) else raw
-    return [q for q in (_normalize_quiz_question(i) for i in (items or [])) if q]
+    questions = [q for q in (_normalize_quiz_question(i) for i in (items or [])) if q]
+    _add_quiz_translations(questions)
+    return questions
 
 
 def load_quiz_questions() -> List[Dict[str, Any]]:
     stored = _normalize_dict(_get_cached(_DOC_QUIZ), {"questions": []}).get("questions")
     items = [q for q in (_normalize_quiz_question(i) for i in (stored or [])) if q]
     if items:
+        if _add_quiz_translations(items):
+            save_quiz_questions(items)
         return items
     seeded = quiz_seed_questions()
     if seeded:
@@ -1048,7 +1080,8 @@ def update_quiz_question(question_id: str, lang: str, text: str | None = None,
     for item in items:
         if item["id"] != question_id:
             continue
-        block = item.get(lang) or item.get("ru") or ["", []]
+        lang = normalize_language(lang)
+        block = localized_value(item, lang, ["", []])
         item[lang] = [
             str(text if text is not None else block[0]).strip(),
             [str(o).strip() for o in (options if options is not None else block[1]) if str(o).strip()],
@@ -1090,7 +1123,7 @@ def build_quiz(lang: str = "ru", count: int = QUIZ_QUESTIONS_PER_RUN) -> List[Di
     pool = load_quiz_questions()
     quiz: List[Dict[str, Any]] = []
     for item in random.sample(pool, min(count, len(pool))):
-        text, options = item.get(lang) or item["ru"]
+        text, options = localized_value(item, lang)
         correct = options[0]
         shuffled = list(options)
         random.shuffle(shuffled)
