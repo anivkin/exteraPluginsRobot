@@ -17,7 +17,7 @@ from bot.services.dialogs import register_dialog_message, has_dialog_media, send
 from bot.services.moderation import moderation_config, request_title
 from bot.states import UserFlow
 from bot.texts import t
-from request_store import get_request_by_id, update_request_payload, update_request_status
+from core.request_store import get_request_by_id, update_request_payload, update_request_status
 
 router = Router(name="author-flow")
 router.callback_query.middleware(MenuOwnerMiddleware())
@@ -268,7 +268,7 @@ async def on_request_appeal_text(message: Message, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("dlg:"))
 async def on_dialog_moderation_action(cb: CallbackQuery, state: FSMContext) -> None:
     from bot.cache import get_admins_super
-    from user_store import ban_user
+    from core.user_store import ban_user
 
     parts = (cb.data or "").split(":")
     if len(parts) < 4:

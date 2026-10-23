@@ -1,4 +1,4 @@
-from plugin_formats import ELYX_LIMIT, PLUGIN_LIMIT
+from core.plugin_formats import ELYX_LIMIT, PLUGIN_LIMIT
 
 MESSAGE_TEXT = 4096
 CAPTION = 1024

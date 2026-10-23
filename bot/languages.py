@@ -1,5 +1,6 @@
 SUPPORTED_LANGUAGES = ("ru", "en", "uk", "zh")
 LANGUAGE_NAMES = {"ru": "Русский", "en": "English", "uk": "Українська", "zh": "简体中文"}
+LANGUAGE_FLAGS = {"ru": "🇷🇺", "en": "🇺🇸", "uk": "🇺🇦", "zh": "🇨🇳"}
 
 
 def normalize_language(value, default="ru"):

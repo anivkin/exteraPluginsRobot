@@ -34,7 +34,7 @@ from bot.services.admin_notifications import (
 )
 from bot.states import UserFlow
 from bot.texts import t
-from request_store import get_all_requests, get_request_by_callback_token, get_request_by_id
+from core.request_store import get_all_requests, get_request_by_callback_token, get_request_by_id
 
 router = Router(name="moderation-flow")
 logger = logging.getLogger(__name__)

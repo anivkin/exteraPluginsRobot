@@ -29,8 +29,8 @@ from bot.services.moderation import (
     vote_summary,
 )
 from bot.texts import t
-from request_store import update_request_payload
-from storage import save_config
+from core.request_store import update_request_payload
+from core.storage import save_config
 
 logger = logging.getLogger(__name__)
 

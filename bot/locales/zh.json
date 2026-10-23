@@ -797,5 +797,6 @@
   "join_permission_can_send_voice_notes": "语音消息",
   "join_permission_can_send_polls": "投票",
   "join_permission_can_send_other_messages": "贴纸/GIF",
-  "join_permission_can_add_web_page_previews": "链接预览"
+  "join_permission_can_add_web_page_previews": "链接预览",
+  "admin_request_already_handled": "此申请已处理，无需再次发布。"
 }

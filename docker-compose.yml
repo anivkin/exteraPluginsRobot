@@ -19,7 +19,7 @@ services:
       dockerfile: Dockerfile
     container_name: extera-plugins-auth
     profiles: ["tools"]
-    command: ["python", "auth.py"]
+    command: ["python", "-m", "scripts.auth"]
     stdin_open: true
     tty: true
     environment:

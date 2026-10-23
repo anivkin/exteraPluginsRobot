@@ -14,7 +14,7 @@ from bot.formatting import telegram_html, visible_html_length
 from bot.helpers import BLANK_CHAR
 from bot.services.channel_text import editing_userbot, send_description, try_edit
 
-from storage import load_poster, save_poster
+from core.storage import load_poster, save_poster
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +109,7 @@ def ensure_updated_plugins_quote(text: str) -> str:
 
 def build_updated_plugins_text(limit: int = 30) -> str:
     import html as _html
-    from storage import load_updated
+    from core.storage import load_updated
 
     items = load_updated().get("items") or []
     lines = [updated_block_title()]

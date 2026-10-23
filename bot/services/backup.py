@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from storage import (
+from core.storage import (
     ADMIN_SQLITE_PATH, CATALOG_SQLITE_PATH, LEGACY_SQLITE_PATH, SECRETS_PATH,
     flush_all, load_config, save_config, snapshot_databases,
 )

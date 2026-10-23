@@ -48,7 +48,7 @@ _media_group_buffers: dict[tuple[int, int, str], dict] = {}
 
 def _user_tz(user_id) -> timezone:
     try:
-        from user_store import get_user
+        from core.user_store import get_user
 
         raw = (get_user(int(user_id)) or {}).get("utc_offset")
         if raw is None:
@@ -891,7 +891,7 @@ async def on_poster_tz_value(message: Message, state: FSMContext) -> None:
         await message.answer(t("poster_tz_bad", lang))
         return
 
-    from user_store import update_user
+    from core.user_store import update_user
 
     update_user(int(message.from_user.id), utc_offset=offset)
     await message.answer(

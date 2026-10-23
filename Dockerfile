@@ -9,6 +9,11 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
 
-COPY . .
+COPY main.py auth.py ./
+COPY core/ ./core/
+COPY bot/ ./bot/
+COPY userbot/ ./userbot/
+COPY img/ ./img/
+COPY scripts/ ./scripts/
 
 CMD ["python", "main.py"]

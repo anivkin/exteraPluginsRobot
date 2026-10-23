@@ -22,4 +22,10 @@ runtime.json
 .runtime-*
 secrets/
 backups/
+tests/
+docs/
+reports/
+dist/
+.pytest_cache/
+config.json.example
 *.zip

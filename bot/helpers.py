@@ -22,7 +22,7 @@ from bot.cache import get_config
 from bot.context import get_lang
 from bot.formatting import split_html, telegram_html
 from bot.texts import t
-from storage import DATA_DIR
+from core.storage import DATA_DIR
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 IMAGES_DIR = BASE_DIR / "img"
@@ -37,6 +37,12 @@ _LINK_PREVIEW_IMAGE_URLS = {
     "appeal": "https://github.com/itsv1eds/exteraPluginsRobot/blob/main/img/appeal.png?raw=true",
     "delete": "https://github.com/itsv1eds/exteraPluginsRobot/blob/main/img/delete.png?raw=true",
 }
+
+
+def _remember_image(image: str, message):
+    if isinstance(message, Message) and message.photo:
+        _image_file_ids[image] = message.photo[-1].file_id
+    return message
 
 
 def get_uploads_dir() -> Path:
@@ -250,7 +256,7 @@ async def send_in_parts(bot, chat_id: int, text: str, kb=None, *,
     return sent
 
 
-async def blank_and_delete(bot, chat_id: int, message_id: int) -> bool:
+async def blank_and_delete(bot, chat_id: int, message_id: int, *, is_media: bool = False) -> bool:
     if not chat_id or not message_id:
         return False
 
@@ -258,33 +264,33 @@ async def blank_and_delete(bot, chat_id: int, message_id: int) -> bool:
     blanked_with = ""
     text_error = caption_error = None
 
-    for candidate in BLANK_CANDIDATES:
-        try:
-            await bot.edit_message_text(
-                candidate, chat_id=int(chat_id), message_id=int(message_id), reply_markup=None,
-            )
-            blanked = True
-            blanked_with = candidate
-            break
-        except Exception as exc:
-            text_error = _short_error(exc)
-            if not _is_empty_text_error(exc):
-                break
-
-    if not blanked:
+    for method in (("caption", "text") if is_media else ("text", "caption")):
         for candidate in BLANK_CANDIDATES:
             try:
-                await bot.edit_message_caption(
-                    chat_id=int(chat_id), message_id=int(message_id),
-                    caption=candidate, reply_markup=None,
-                )
+                if method == "caption":
+                    await bot.edit_message_caption(
+                        chat_id=int(chat_id), message_id=int(message_id), caption=candidate, reply_markup=None,
+                    )
+                else:
+                    await bot.edit_message_text(
+                        candidate, chat_id=int(chat_id), message_id=int(message_id), reply_markup=None,
+                    )
                 blanked = True
                 blanked_with = candidate
                 break
             except Exception as exc:
-                caption_error = _short_error(exc)
+                if _is_not_modified_error(exc):
+                    blanked = True
+                    blanked_with = candidate
+                    break
+                if method == "caption":
+                    caption_error = _short_error(exc)
+                else:
+                    text_error = _short_error(exc)
                 if not _is_empty_text_error(exc):
                     break
+        if blanked:
+            break
 
     async def _delete(delay: float) -> bool:
         if delay:
@@ -319,7 +325,8 @@ async def blank_and_delete_message(msg) -> bool:
     if msg is None:
         return False
     try:
-        return await blank_and_delete(msg.bot, msg.chat.id, msg.message_id)
+        is_media = getattr(msg, "content_type", None) in {"photo", "video", "animation", "document", "audio", "voice"}
+        return await blank_and_delete(msg.bot, msg.chat.id, msg.message_id, is_media=is_media)
     except Exception:
         return False
 
@@ -342,6 +349,7 @@ async def answer(
     kb: Optional[InlineKeyboardMarkup] = None,
     image: Optional[str] = None,
 ) -> Optional[Message]:
+    text_length = len(strip_html(text or ""))
     if image:
         try:
             user = (target.from_user if isinstance(target, Message) else (target.from_user or (target.message.from_user if target.message else None)))
@@ -355,10 +363,18 @@ async def answer(
             pass
     preview_options = link_preview_options(image)
     if preview_options:
-        image = None
+        keep_photo = (
+            isinstance(target, CallbackQuery) and bool(getattr(target.message, "photo", None))
+            and text_length <= limits.CAPTION
+            and (image in _image_file_ids or (IMAGES_DIR / f"{image}.png").exists())
+        )
+        if keep_photo:
+            preview_options = None
+        else:
+            image = None
     disable_web_page_preview = not bool(preview_options)
 
-    if image and len(strip_html(text or "")) > limits.CAPTION:
+    if image and text_length > limits.CAPTION:
         image = None
 
     if isinstance(target, CallbackQuery):
@@ -370,55 +386,46 @@ async def answer(
         chat_id = msg.chat.id
         thread_kwargs = _topic_kwargs(msg)
 
-        try:
-            if msg.photo and len(strip_html(text or "")) > limits.CAPTION:
-                try:
-                    await blank_and_delete_message(msg)
-                except Exception:
-                    pass
-                return await bot.send_message(
-                    chat_id,
-                    text=text,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=kb,
-                    disable_web_page_preview=disable_web_page_preview,
-                    link_preview_options=preview_options,
-                    **thread_kwargs,
+        async def replace_with_text():
+            if text_length > limits.MESSAGE_TEXT:
+                sent = await send_in_parts(
+                    bot, chat_id, text, kb, disable_web_page_preview=disable_web_page_preview,
+                    link_preview_options=preview_options, **thread_kwargs,
                 )
+            else:
+                sent = await bot.send_message(
+                    chat_id, text=text, parse_mode=ParseMode.HTML, reply_markup=kb,
+                    disable_web_page_preview=disable_web_page_preview,
+                    link_preview_options=preview_options, **thread_kwargs,
+                )
+            spawn_background(blank_and_delete_message(msg))
+            return sent
+
+        try:
+            if msg.photo and text_length > limits.CAPTION:
+                return await replace_with_text()
 
             if preview_options and msg.photo:
-                try:
-                    await blank_and_delete_message(msg)
-                except Exception:
-                    pass
-                return await bot.send_message(
-                    chat_id,
-                    text=text,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=kb,
-                    disable_web_page_preview=False,
-                    link_preview_options=preview_options,
-                    **thread_kwargs,
-                )
+                return await replace_with_text()
 
             if image and not msg.photo:
+                file_id = _image_file_ids.get(image)
                 path = IMAGES_DIR / f"{image}.png"
-                if path.exists():
-                    await blank_and_delete_message(msg)
-                    return await bot.send_photo(
-                        chat_id,
-                        FSInputFile(path),
-                        caption=text,
-                        parse_mode=ParseMode.HTML,
+                if file_id or path.exists():
+                    sent = await msg.edit_media(
+                        InputMediaPhoto(media=file_id or FSInputFile(path), caption=text, parse_mode=ParseMode.HTML),
                         reply_markup=kb,
-                        **thread_kwargs,
                     )
+                    return _remember_image(image, sent)
 
             if image and msg.photo:
                 file_id = _image_file_ids.get(image)
 
+                if file_id and msg.photo[-1].file_id == file_id:
+                    return await msg.edit_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
+
                 if file_id:
-                    return await msg.edit_media(
+                    edited = await msg.edit_media(
                         InputMediaPhoto(
                             media=file_id,
                             caption=text,
@@ -426,10 +433,11 @@ async def answer(
                         ),
                         reply_markup=kb,
                     )
+                    return _remember_image(image, edited)
 
                 path = IMAGES_DIR / f"{image}.png"
                 if path.exists():
-                    return await msg.edit_media(
+                    edited = await msg.edit_media(
                         InputMediaPhoto(
                             media=FSInputFile(path),
                             caption=text,
@@ -437,21 +445,9 @@ async def answer(
                         ),
                         reply_markup=kb,
                     )
+                    return _remember_image(image, edited)
 
-                if msg.photo:
-                    return await msg.edit_caption(
-                        caption=text,
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=kb,
-                    )
-                else:
-                    return await msg.edit_text(
-                        text=text,
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=kb,
-                        disable_web_page_preview=disable_web_page_preview,
-                        link_preview_options=preview_options,
-                    )
+                return await msg.edit_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
 
             elif msg.photo:
                 return await msg.edit_caption(

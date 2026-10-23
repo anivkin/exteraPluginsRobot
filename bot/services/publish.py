@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from plugin_formats import payload_extension
+from core.plugin_formats import payload_extension
 from typing import Any, Dict, Optional
 
 from aiogram import Bot
@@ -14,11 +14,11 @@ from aiogram.types import FSInputFile
 from bot.formatting import join_plain, plain_html, strip_blockquote_tags, telegram_html, visible_html_length
 from bot.helpers import blank_and_delete, fit_filename
 from bot.services.channel_text import editing_userbot, send_description, try_edit
-from storage import flush_all, load_icons, load_plugins, load_updated, save_icons, save_plugins, save_updated
-from request_store import update_request_status
+from core.storage import flush_documents, load_icons, load_plugins, load_updated, save_icons, save_plugins, save_updated
+from core.request_store import update_request_status
 from bot.cache import get_categories, invalidate, get_config
 from bot import limits
-from catalog import invalidate_catalog_cache, plugin_deeplink_token
+from core.catalog import invalidate_catalog_cache, plugin_deeplink_token
 
 
 def _channel_links_line(bot_username: str, slug: str) -> str:
@@ -261,7 +261,7 @@ async def publish_plugin(
         submitter_username,
     )
 
-    await flush_all()
+    await flush_documents("requests", "plugins")
 
     if file_path:
         Path(file_path).unlink(missing_ok=True)
@@ -309,7 +309,7 @@ async def publish_icon(
         submitter_username,
     )
 
-    await flush_all()
+    await flush_documents("requests", "icons")
 
     if file_path:
         Path(file_path).unlink(missing_ok=True)
@@ -388,6 +388,8 @@ async def update_plugin(
     link = (old_catalog_entry.get("channel_message") or {}).get("link")
     if link:
         add_updated_plugin(name, link)
+
+    await flush_documents("requests", "plugins", "updated")
     
     if file_path:
         Path(file_path).unlink(missing_ok=True)
@@ -782,7 +784,7 @@ def remove_icon_entry(slug: str) -> bool:
 
 async def remove_user_content(user_id: int, username: str = "") -> dict:
     from userbot.client import get_userbot
-    from catalog import find_user_plugins, find_user_icons
+    from core.catalog import find_user_plugins, find_user_icons
 
     userbot = await get_userbot()
     removed_plugins: list[str] = []

@@ -26,7 +26,7 @@ def _forum_reply_markup(entry: dict | None, request_id: str, yes: int, no: int):
     if isinstance(entry, dict) and entry.get("type") == "delete":
         return moderation_delete_kb(request_id)
     return moderation_vote_kb(request_id, yes, no)
-from request_store import get_request_by_id, update_request_payload
+from core.request_store import get_request_by_id, update_request_payload
 
 VoteValue = Literal["yes", "no"]
 VOTABLE_REQUEST_STATUSES = frozenset({"pending", "error", "scheduled"})

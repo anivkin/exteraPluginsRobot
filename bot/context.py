@@ -5,7 +5,7 @@ from aiogram.types import CallbackQuery, Message
 
 from bot.texts import DEFAULT_LANGUAGE
 from bot.languages import normalize_language
-from user_store import get_user_language
+from core.user_store import get_user_language
 
 
 def get_lang(user_id: Optional[int]) -> str:

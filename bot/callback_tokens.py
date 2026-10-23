@@ -2,7 +2,7 @@ import hashlib
 import re
 from typing import Dict
 
-from storage import load_icons, load_plugins
+from core.storage import load_icons, load_plugins
 
 _MAX_CALLBACK_SLUG = 40
 _slug_tokens: Dict[str, str] = {}

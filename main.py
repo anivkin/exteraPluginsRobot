@@ -5,6 +5,8 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
+from bot.telemetry import TelegramRequestTimingMiddleware
+
 from bot.cache import get_config, preload_cache
 from bot.routers import admin_flow, author_flow, catalog_flow, dialog_flow, user_flow, joinly_flow, moderation_flow, poster_flow
 from bot.middlewares import (
@@ -67,7 +69,7 @@ async def start_userbot() -> None:
 
 
 async def on_startup(bot: Bot) -> None:
-    from storage import verify_integrity, StorageCorruptError
+    from core.storage import verify_integrity, StorageCorruptError
     try:
         verify_integrity()
     except StorageCorruptError as exc:
@@ -76,11 +78,11 @@ async def on_startup(bot: Bot) -> None:
 
     await preload_cache()
 
-    from storage import preload_storage
+    from core.storage import preload_storage
     await preload_storage()
 
     from bot.services.reason_templates import upgrade_reason_templates
-    from storage import load_config, save_config, flush_all
+    from core.storage import load_config, save_config, flush_all
     from bot.cache import invalidate
     config = load_config()
     if upgrade_reason_templates(config):
@@ -94,10 +96,10 @@ async def on_startup(bot: Bot) -> None:
     from bot.services.publish import seed_updated_plugins
     seed_updated_plugins()
     
-    from user_store import init_user_store
+    from core.user_store import init_user_store
     await init_user_store()
 
-    from request_store import (
+    from core.request_store import (
         start_draft_cleanup_worker,
         start_draft_reminder_worker,
         start_scheduled_publish_worker,
@@ -129,7 +131,7 @@ async def on_startup(bot: Bot) -> None:
 
 
 async def on_shutdown(bot: Bot) -> None:
-    from request_store import (
+    from core.request_store import (
         stop_draft_cleanup_worker,
         stop_draft_reminder_worker,
         stop_scheduled_publish_worker,
@@ -151,10 +153,10 @@ async def on_shutdown(bot: Bot) -> None:
     from bot.services.backup import stop_backup_worker
     await stop_backup_worker()
 
-    from user_store import flush_user_store
+    from core.user_store import flush_user_store
     await flush_user_store()
     
-    from storage import flush_all
+    from core.storage import flush_all
     await flush_all()
     
     await stop_log_worker()
@@ -182,6 +184,7 @@ async def main() -> None:
         token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
+    bot.session.middleware(TelegramRequestTimingMiddleware())
     
     dp = Dispatcher()
     

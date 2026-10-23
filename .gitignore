@@ -26,6 +26,7 @@ __pycache__/
 .venv
 venv/
 /reports
+/dist
 /tests
 *.zip
 

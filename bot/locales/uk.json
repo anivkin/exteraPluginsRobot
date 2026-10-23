@@ -797,5 +797,6 @@
   "join_permission_can_send_voice_notes": "Голосові повідомлення",
   "join_permission_can_send_polls": "Опитування",
   "join_permission_can_send_other_messages": "Наліпки/GIF",
-  "join_permission_can_add_web_page_previews": "Попередній перегляд посилань"
+  "join_permission_can_add_web_page_previews": "Попередній перегляд посилань",
+  "admin_request_already_handled": "Цю заявку вже опрацьовано. Повторна публікація не потрібна."
 }

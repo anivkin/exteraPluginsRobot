@@ -2,7 +2,7 @@ import asyncio
 import time
 from typing import Any, Callable, Dict, List, Optional
 
-from storage import load_config, load_icons, load_plugins
+from core.storage import load_config, load_icons, load_plugins
 from bot.icons import CATEGORY_ICONS
 from bot.texts import t
 

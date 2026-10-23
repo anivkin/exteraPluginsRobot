@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from bot.cache import get_categories
-from storage import DATA_DIR, load_icons, load_plugins, save_icons, save_plugins
+from core.storage import DATA_DIR, load_icons, load_plugins, save_icons, save_plugins
 
 TEST_PREFIX = "test-nav-"
 DEFAULT_PLUGINS = 42

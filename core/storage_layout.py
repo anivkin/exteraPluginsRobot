@@ -9,7 +9,7 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 CATALOG_TABLES = frozenset(("plugins_items", "icons_items"))
 ADMIN_TABLES = frozenset(("documents", "requests_items", "users_items", "subscriptions_items", "updated_items", "joinly_items"))
 MIGRATION_KEY = "migration:storage_layout:v1"
@@ -173,14 +173,21 @@ def _validate(conn):
     return None
 
 
+@contextmanager
+def _migration_lock(directory):
+    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
+
+
 def initialize(import_legacy, prepare_config):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     ADMIN_SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
     CATALOG_SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = ADMIN_SQLITE_PATH.parent / ".storage-layout.lock"
-    with open(lock_path, "a+b") as lock:
-        os.chmod(lock_path, 0o600)
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with _migration_lock(ADMIN_SQLITE_PATH.parent):
         with closing(connect()) as conn:
             marker = _validate(conn)
             if marker is not None:

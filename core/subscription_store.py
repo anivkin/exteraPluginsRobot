@@ -1,6 +1,6 @@
 from typing import Any, Dict, List
 
-from storage import StorageError, load_subscriptions, save_subscriptions
+from core.storage import StorageError, load_subscriptions, save_subscriptions
 
 
 ALL_SUBSCRIPTION_KEY = "all"

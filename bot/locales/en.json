@@ -797,5 +797,6 @@
   "join_permission_can_send_voice_notes": "Voice notes",
   "join_permission_can_send_polls": "Polls",
   "join_permission_can_send_other_messages": "Stickers/GIF",
-  "join_permission_can_add_web_page_previews": "Link previews"
+  "join_permission_can_add_web_page_previews": "Link previews",
+  "admin_request_already_handled": "This request has already been handled. It will not be published again."
 }

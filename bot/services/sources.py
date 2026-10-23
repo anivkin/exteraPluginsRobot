@@ -3,9 +3,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from storage import load_config, save_config, load_plugins, save_plugins
+from core.storage import load_config, save_config, load_plugins, save_plugins
 from bot.cache import invalidate
-from catalog import invalidate_catalog_cache, plugin_source_filter_key
+from core.catalog import invalidate_catalog_cache, plugin_source_filter_key
 
 
 def _norm_id(value: Any) -> str:

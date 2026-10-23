@@ -16,9 +16,9 @@ from functools import lru_cache
 
 from bot.languages import SUPPORTED_LANGUAGES, localized_value, normalize_language
 
-from runtime_config import merge_secrets, persisted_secrets, read_secrets, split_config, write_secrets
-import storage_layout as _layout
-from storage_layout import (
+from core.runtime_config import merge_secrets, persisted_secrets, read_secrets, split_config, write_secrets
+import core.storage_layout as _layout
+from core.storage_layout import (
     ADMIN_SQLITE_PATH, CATALOG_SQLITE_PATH, DATA_DIR, LEGACY_SQLITE_PATH,
     MIGRATION_KEY, SECRETS_PATH, StorageCorruptError, StorageError,
     check_integrity, connect, initialize, read_config, table_exists,
@@ -815,6 +815,17 @@ async def _schedule_save(doc_key: str) -> None:
         now = time.time()
 
     _last_save[doc_key] = now
+    await flush_documents(doc_key)
+
+
+async def flush_documents(*doc_keys: str) -> None:
+    for doc_key in dict.fromkeys(doc_keys):
+        if doc_key not in _WRITERS:
+            raise ValueError(f"Unknown storage document: {doc_key}")
+        await _flush_document(doc_key)
+
+
+async def _flush_document(doc_key: str) -> None:
     if doc_key not in _save_locks:
         _save_locks[doc_key] = asyncio.Lock()
 
@@ -995,7 +1006,7 @@ def save_joinly(data: Dict[str, Any]) -> None:
 
 QUIZ_QUESTIONS_PER_RUN = 3
 QUIZ_OPTIONS_PER_QUESTION = 4
-_QUIZ_SEED_FILE = Path(__file__).resolve().parent / "quiz_seed.json"
+_QUIZ_SEED_FILE = ROOT / "quiz_seed.json"
 
 
 def _normalize_quiz_question(item: Any) -> Optional[Dict[str, Any]]:
@@ -1023,7 +1034,7 @@ def _normalize_quiz_question(item: Any) -> Optional[Dict[str, Any]]:
 def _quiz_translations() -> dict:
     questions = {}
     for lang in SUPPORTED_LANGUAGES:
-        path = Path(__file__).resolve().parent / "bot/locales/quiz" / f"{lang}.json"
+        path = ROOT / "bot/locales/quiz" / f"{lang}.json"
         for question_id, block in json.loads(path.read_text(encoding="utf-8")).items():
             questions.setdefault(question_id, {"id": question_id})[lang] = block
     return questions
@@ -1187,10 +1198,6 @@ def save_dialogs(data: Dict[str, Any]) -> None:
 
 
 async def flush_all() -> None:
-    tasks = [task for task in _background_tasks if not task.done()]
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
-
     if (
         _config_cache is not None
         and _config_persisted_generation < _config_generation
@@ -1201,12 +1208,7 @@ async def flush_all() -> None:
             _config_generation,
         )
 
-    for doc_key, is_dirty in list(_dirty.items()):
-        if is_dirty and doc_key in _cache:
-            data = deepcopy(_cache[doc_key])
-            await asyncio.to_thread(_write_sqlite_doc_sync, doc_key, data)
-            if _cache.get(doc_key) == data:
-                _dirty[doc_key] = False
+    await flush_documents(*list(_dirty))
 
 
 async def preload_storage() -> None:

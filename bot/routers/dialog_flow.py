@@ -24,7 +24,7 @@ from bot.services.dialogs import (
     take_dialog_reply_draft,
 )
 from bot.texts import t
-from request_store import get_request_by_id
+from core.request_store import get_request_by_id
 
 router = Router(name="dialog-flow")
 logger = logging.getLogger(__name__)

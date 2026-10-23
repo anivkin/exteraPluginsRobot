@@ -23,7 +23,7 @@ async def get_file_client():
         token = cfg.get("bot_token") or ""
         bot_id = int(token.split(":", 1)[0])
         if _client is None:
-            from storage import DATA_DIR
+            from core.storage import DATA_DIR
             directory = Path(str(credentials.get("bot_session_dir") or DATA_DIR / "bot_sessions"))
             directory.mkdir(parents=True, exist_ok=True)
             os.chmod(directory, 0o700)

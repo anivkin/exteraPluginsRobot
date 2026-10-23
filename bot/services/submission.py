@@ -10,8 +10,8 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Document
 
 from bot import limits
-from plugin_parser import PluginParseError, parse_plugin_file
-from plugin_formats import plugin_extension, plugin_file_limit
+from core.plugin_parser import PluginParseError, parse_plugin_file
+from core.plugin_formats import plugin_extension, plugin_file_limit
 from bot.services.plugin_files import download_large_plugin
 from bot.helpers import get_uploads_subdir, sanitize_filename
 from bot.formatting import plain_html

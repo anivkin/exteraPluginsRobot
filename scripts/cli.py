@@ -2,7 +2,7 @@ import argparse
 import textwrap
 from pathlib import Path
 
-from plugin_parser import PluginParseError, parse_plugin_file
+from core.plugin_parser import PluginParseError, parse_plugin_file
 
 
 def cmd_preview(args: argparse.Namespace) -> None:

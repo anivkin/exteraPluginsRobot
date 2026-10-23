@@ -5,7 +5,7 @@ import os
 import time
 from datetime import datetime
 from pathlib import Path
-from plugin_formats import plugin_extension
+from core.plugin_formats import plugin_extension
 from typing import Any, Dict, List, Optional
 
 from telethon import TelegramClient, __version__ as TELETHON_VERSION, utils
@@ -15,12 +15,12 @@ from telethon.tl.functions.help import GetAppConfigRequest, GetConfigRequest
 from telethon.tl.types import DocumentAttributeFilename, Message, MessageEntityBlockquote
 from telethon.extensions import html as telethon_html
 
-from channel_parser import parse_channel_post
-from storage import load_plugins, save_plugins, load_icons, save_icons, load_config
+from core.channel_parser import parse_channel_post
+from core.storage import load_plugins, save_plugins, load_icons, save_icons, load_config
 from bot.cache import invalidate
 from bot import limits
 from bot.formatting import split_html, utf16_length
-from catalog import invalidate_catalog_cache
+from core.catalog import invalidate_catalog_cache
 
 logger = logging.getLogger(__name__)
 

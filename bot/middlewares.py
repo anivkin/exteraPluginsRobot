@@ -1,11 +1,14 @@
 import asyncio
 import logging
 import re
+import time
 from typing import Any, Awaitable, Callable, Optional
 
 from aiogram import BaseMiddleware
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter, TelegramServerError
 from aiogram.types import CallbackQuery, ErrorEvent, Message
+
+from bot.telemetry import CallbackTrace, callback_trace
 
 logger = logging.getLogger(__name__)
 
@@ -153,18 +156,32 @@ class CallbackAckWatchdogMiddleware(BaseMiddleware):
         if not isinstance(event, CallbackQuery):
             return await handler(event, data)
 
+        trace = CallbackTrace(event.id, event.message.chat.id if event.message else None,
+                              ":".join((event.data or "").split(":")[:2]))
+        trace_token = callback_trace.set(trace)
+
         async def _ack_later() -> None:
             try:
                 await asyncio.sleep(self.delay)
-                await event.answer()
+                if not trace.acknowledged:
+                    await event.answer()
             except Exception:
                 pass
 
         watchdog = asyncio.create_task(_ack_later())
+        started = time.perf_counter()
         try:
             return await handler(event, data)
         finally:
             watchdog.cancel()
+            callback_trace.reset(trace_token)
+            duration = time.perf_counter() - started
+            if duration >= 0.75:
+                logger.info(
+                    "event=callback.slow action=%s duration_ms=%.0f api_calls=%s api_total_ms=%.0f first_ui_ms=%s",
+                    trace.action, duration * 1000, trace.api_calls, trace.api_seconds * 1000,
+                    round(trace.first_ui_ms) if trace.first_ui_ms is not None else "-",
+                )
 
 
 class UserActionLoggingMiddleware(BaseMiddleware):
@@ -210,7 +227,7 @@ class RequestCallbackMiddleware(BaseMiddleware):
 
     async def __call__(self, handler, event, data):
         if isinstance(event, CallbackQuery) and event.data and event.data.startswith(("adm:", "usr:", "dlg:")):
-            from request_store import get_request_by_callback_token
+            from core.request_store import get_request_by_callback_token
 
             parts = event.data.split(":")
             for index, part in enumerate(parts):

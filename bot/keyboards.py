@@ -5,9 +5,9 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from bot.callback_tokens import encode_slug
 from bot.icons import CATEGORY_ICONS, ICONS
 from bot.texts import t
-from bot.languages import LANGUAGE_NAMES, SUPPORTED_LANGUAGES, category_label
+from bot.languages import LANGUAGE_FLAGS, LANGUAGE_NAMES, SUPPORTED_LANGUAGES, category_label
 from bot.services.reason_templates import template_page, templates_allowed
-from request_store import get_request_by_callback_token, request_callback_token, request_deeplink_token
+from core.request_store import get_request_by_callback_token, request_callback_token, request_deeplink_token
 
 
 def _btn(
@@ -33,7 +33,7 @@ def _btn(
 
 
 def language_kb() -> InlineKeyboardMarkup:
-    buttons = [_btn(LANGUAGE_NAMES[code], callback_data=f"lang:{code}", icon="settings") for code in SUPPORTED_LANGUAGES]
+    buttons = [_btn(f"{LANGUAGE_FLAGS[code]} {LANGUAGE_NAMES[code]}", callback_data=f"lang:{code}") for code in SUPPORTED_LANGUAGES]
     return InlineKeyboardMarkup(inline_keyboard=[buttons[:2], buttons[2:]])
 
 
@@ -617,8 +617,8 @@ def admin_quiz_list_kb(items: List[Tuple[str, str]], page: int, total_pages: int
 def admin_quiz_item_kb(question_id: str, lang: str = "ru", edit_lang: str = "ru") -> InlineKeyboardMarkup:
     other = SUPPORTED_LANGUAGES[(SUPPORTED_LANGUAGES.index(edit_lang) + 1) % len(SUPPORTED_LANGUAGES)]
     return InlineKeyboardMarkup(inline_keyboard=[
-        [_btn(t("admin_quiz_btn_lang", lang, value=edit_lang.upper()),
-              callback_data=f"adm:quiz:lang:{question_id}:{other}", icon="settings")],
+        [_btn(f"{LANGUAGE_FLAGS[edit_lang]} {t('admin_quiz_btn_lang', lang, value=edit_lang.upper())}",
+              callback_data=f"adm:quiz:lang:{question_id}:{other}")],
         [_btn(t("admin_quiz_btn_text", lang), callback_data=f"adm:quiz:edit_text:{question_id}", icon="edit")],
         [_btn(t("admin_quiz_btn_options", lang), callback_data=f"adm:quiz:edit_options:{question_id}", icon="edit")],
         [_btn(t("btn_delete", lang), callback_data=f"adm:quiz:del:{question_id}", icon="delete", style="danger")],

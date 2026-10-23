@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from storage import load_audit, save_audit
+from core.storage import load_audit, save_audit
 
 MAX_AUDIT_EVENTS = 1000
 

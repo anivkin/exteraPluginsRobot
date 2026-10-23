@@ -131,8 +131,8 @@ from bot.services.submission import process_plugin_file
 from bot.states import AdminFlow
 from bot.icons import emoji_html
 from bot.texts import TEXTS, t
-from catalog import find_icon_by_slug, find_plugin_by_slug, list_published_icons, list_published_plugins
-from request_store import (
+from core.catalog import find_icon_by_slug, find_plugin_by_slug, list_published_icons, list_published_plugins
+from core.request_store import (
     cleanup_hidden_requests,
     delete_request_and_file,
     delete_requests_by_plugin_id,
@@ -143,10 +143,10 @@ from request_store import (
     update_request_payload,
     update_request_status,
 )
-from storage import ADMIN_SQLITE_PATH, CATALOG_SQLITE_PATH, DATA_DIR, QUIZ_OPTIONS_PER_QUESTION, QUIZ_QUESTIONS_PER_RUN, add_quiz_question, delete_quiz_question, load_config, load_plugins, load_quiz_questions, restore_quiz_defaults, save_config, save_plugins, update_quiz_question
-from user_store import ban_user, get_banned_users, is_broadcast_enabled, list_users, unban_user
-from subscription_store import list_subscribers
-from catalog import invalidate_catalog_cache
+from core.storage import ADMIN_SQLITE_PATH, CATALOG_SQLITE_PATH, DATA_DIR, QUIZ_OPTIONS_PER_QUESTION, QUIZ_QUESTIONS_PER_RUN, add_quiz_question, delete_quiz_question, load_config, load_plugins, load_quiz_questions, restore_quiz_defaults, save_config, save_plugins, update_quiz_question
+from core.user_store import ban_user, get_banned_users, is_broadcast_enabled, list_users, unban_user
+from core.subscription_store import list_subscribers
+from core.catalog import invalidate_catalog_cache
 
 DEFAULT_APPROVE_TEMPLATES = reason_templates.DEFAULT_APPROVE_TEMPLATES
 DEFAULT_REJECT_TEMPLATES = reason_templates.DEFAULT_REJECT_TEMPLATES
@@ -1059,8 +1059,19 @@ async def _resolve_admin_identities(
     lang: str,
     hints: dict[int, str] | None = None,
 ) -> dict[int, dict[str, str]]:
-    stored = {int(user["user_id"]): user for user in list_users() if str(user.get("user_id", "")).isdigit()}
+    from core.user_store import get_user
+    from bot.services.chat_info import get_chat_labels
+
+    stored = {admin_id: get_user(admin_id) for admin_id in admin_ids}
     hints = hints or {}
+    missing = []
+    for admin_id in admin_ids:
+        hint = str(hints.get(admin_id) or "").strip().lstrip("@")
+        if hint in {"unknown", f"id{admin_id}"}:
+            hint = ""
+        if not (hint or str(stored[admin_id].get("username") or "").strip()):
+            missing.append(admin_id)
+    labels = await get_chat_labels(bot, missing)
     result: dict[int, dict[str, str]] = {}
     for admin_id in admin_ids:
         hint = str(hints.get(admin_id) or "").strip().lstrip("@")
@@ -1070,16 +1081,9 @@ async def _resolve_admin_identities(
         username = hint or str(user.get("username") or "").strip().lstrip("@")
         name = str(user.get("full_name") or user.get("first_name") or "").strip()
         if not username:
-            try:
-                chat = await bot.get_chat(admin_id)
-                username = str(getattr(chat, "username", "") or "").strip().lstrip("@")
-                name = str(
-                    getattr(chat, "full_name", "")
-                    or getattr(chat, "first_name", "")
-                    or name
-                ).strip()
-            except Exception:
-                pass
+            identity = labels.get(admin_id, {})
+            username = identity.get("username") or ""
+            name = identity.get("name") or name
         if username:
             button = f"@{username}"
             html_label = f"@{plain_html(username)}"
@@ -3127,7 +3131,7 @@ async def _send_admin_post(cb: CallbackQuery, state: FSMContext) -> None:
         return
 
     final_text = text
-    from storage import load_updated
+    from core.storage import load_updated
 
     updated = load_updated()
     items = updated.get("items") or []
@@ -3171,7 +3175,7 @@ def _with_updated_plugins_block(target: CallbackQuery | Message, base_text: str)
         return ""
 
     try:
-        from storage import load_updated
+        from core.storage import load_updated
 
         updated = load_updated()
         items = updated.get("items") or []
@@ -3197,7 +3201,7 @@ def _with_updated_plugins_block(target: CallbackQuery | Message, base_text: str)
 
 def _has_updated_plugins() -> bool:
     try:
-        from storage import load_updated
+        from core.storage import load_updated
 
         updated = load_updated()
         items = updated.get("items") or []
@@ -4617,7 +4621,7 @@ async def _execute_ban(bot, user_id: int, delete_plugins: bool, actor_label: str
         pass
     removed_count = 0
     if delete_plugins:
-        from user_store import get_user
+        from core.user_store import get_user
         user_data = get_user(user_id)
         removal = await remove_user_content(user_id, user_data.get("username", ""))
         removed_count = len(removal["removed_plugins"]) + len(removal["removed_icons"])
@@ -5917,6 +5921,7 @@ async def on_admin_draft_back(cb: CallbackQuery, state: FSMContext) -> None:
     if not _ensure_admin(cb):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
+    spawn_background(ack(cb))
     prev = await _nav_prev(state)
     if prev:
         await _render_nav_token(cb, state, prev)
@@ -6033,6 +6038,48 @@ async def on_admin_draft_field_value(message: Message, state: FSMContext) -> Non
                 await state.update_data(draft_message_id=sent.message_id)
 
 
+async def _finish_publish_notifications(bot, entry: dict, notify_key: str, actor: str,
+                                        removed_plugin: dict | None = None) -> None:
+    payload = entry.get("payload", {})
+    request_id = str(entry.get("id") or "")
+
+    async def notify_author():
+        user_id = payload.get("user_id")
+        if not user_id:
+            return
+        plugin = payload.get("plugin") or payload.get("icon") or {}
+        await bot.send_message(
+            user_id,
+            t(notify_key, get_lang(user_id), name=plain_html(plugin.get("name") or "—"),
+              version=plain_html(plugin.get("version") or "—")),
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+
+    calls = [
+        ("admin_notifications", finalize_admin_notify_messages(bot, entry, "Заявка была принята", actor)),
+        ("forum", delete_forum_request_message(bot, entry)),
+        ("author", notify_author()),
+    ]
+    if entry.get("type") == "update":
+        calls.append(("subscribers", _notify_subscribers(
+            bot, payload.get("update_slug") or payload.get("plugin", {}).get("id"),
+            payload.get("plugin", {}), payload.get("changelog"),
+        )))
+    if removed_plugin:
+        calls.append(("removed_authors", notify_plugin_authors_removed(
+            bot, removed_plugin, str(payload.get("admin_comment") or ""),
+        )))
+    started = time.perf_counter()
+    results = await asyncio.gather(*(call for _, call in calls), return_exceptions=True)
+    for (name, _), result in zip(calls, results):
+        if isinstance(result, BaseException):
+            logger.error("event=moderation.publish.followup_failed request_id=%s surface=%s", request_id, name,
+                         exc_info=(type(result), result, result.__traceback__))
+    logger.info("event=moderation.publish.followups_done request_id=%s duration_ms=%.0f", request_id,
+                (time.perf_counter() - started) * 1000)
+
+
 @router.callback_query(F.data.regexp(r"^adm:submit(_force)?$"))
 async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
     lang = _lang_for(cb)
@@ -6046,6 +6093,13 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
 
     if not entry:
         await cb.answer(_tr(cb, "not_found"), show_alert=True)
+        return
+
+    if _is_appeal(entry):
+        await cb.answer(_tr(cb, "appeal_not_a_plugin"), show_alert=True)
+        return
+    if entry.get("status") in {"published", "deleted"}:
+        await cb.answer(_tr(cb, "admin_request_already_handled"), show_alert=True)
         return
 
     if not _acquire_request_lock(request_id):
@@ -6129,11 +6183,9 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
 
     await ack(cb, _tr(cb, "admin_publishing"))
 
-    if _is_appeal(entry):
-        await cb.answer(_tr(cb, "appeal_not_a_plugin"), show_alert=True)
-        _release_request_lock(request_id)
-        return
-
+    operation_started = time.perf_counter()
+    completed = False
+    removed_plugin = None
     try:
         if request_type == "update":
             old_plugin = payload.get("old_plugin", {})
@@ -6143,13 +6195,6 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
                 cb.bot,
                 actor=_admin_actor_label(cb),
                 actor_id=_actor_id(cb),
-            )
-            update_slug = payload.get("update_slug") or payload.get("plugin", {}).get("id")
-            await _notify_subscribers(
-                cb.bot,
-                update_slug,
-                payload.get("plugin", {}),
-                payload.get("changelog"),
             )
             notify_key = "notify_update_published"
         elif submission_type == "icon":
@@ -6169,11 +6214,10 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
             if not removed:
                 raise ValueError("Failed to remove plugin")
             update_request_status(request_id, "deleted", actor=_admin_actor_label(cb), actor_id=_actor_id(cb))
-            try:
-                await notify_plugin_authors_removed(
-                    cb.bot, plugin_entry, str(payload.get("admin_comment") or ""))
-            except Exception:
-                logger.exception("event=delete.notify_authors_failed slug=%s", delete_slug)
+            removed_plugin = plugin_entry
+            from core.storage import flush_documents
+
+            await flush_documents("requests", "plugins")
             result = {"link": plugin_entry.get("channel_message", {}).get("link", "")}
             notify_key = "notify_deleted"
         else:
@@ -6201,40 +6245,20 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
             })
             spawn_background(schedule_example_media(cb.bot, request_id))
 
-        try:
-            await finalize_admin_notify_messages(
-                cb.bot,
-                entry,
-                "Заявка была принята",
-                _admin_actor_label(cb),
-            )
-        except Exception:
-            pass
-        await delete_forum_request_message(cb.bot, entry)
-
         user_id = entry.get("payload", {}).get("user_id")
-        payload = entry.get("payload", {})
-        name = payload.get("plugin", {}).get("name") or payload.get("icon", {}).get("name", "")
-        version = payload.get("plugin", {}).get("version")
-
-        if user_id:
-            notify_lang = get_lang(user_id)
-            try:
-                await cb.bot.send_message(
-                    user_id,
-                    t(notify_key, notify_lang, name=name, version=version or "—"),
-                    parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True,
-                )
-            except Exception:
-                pass
-
+        channel_duration = time.perf_counter() - operation_started
+        logger.info("event=moderation.publish.channel_done request_id=%s duration_ms=%.0f", request_id, channel_duration * 1000)
+        await state.set_state(AdminFlow.menu)
+        await state.update_data(**{_NAV_STACK_KEY: ["adm:menu"]})
         await answer(
             cb,
             _tr(cb, "admin_publish_done", link=result.get("link", "")),
             admin_menu_kb(_admin_menu_role(cb), lang=lang),
-            "profile",
+            "admin",
         )
+        completed = True
+        logger.info("event=moderation.publish.ui_ready request_id=%s duration_ms=%.0f", request_id,
+                    (time.perf_counter() - operation_started) * 1000)
 
         logger.info(
             "event=moderation.publish.success request_id=%s request_type=%s submission_type=%s item=%s admin_id=%s user_id=%s link=%s",
@@ -6246,18 +6270,21 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
             user_id or "-",
             result.get("link", ""),
         )
-        add_audit_event(
-            "moderation.publish_success",
-            actor_id=admin_id,
-            actor=_admin_actor_label(cb),
-            request_id=str(request_id),
-            details={
-                "request_type": request_type,
-                "submission_type": submission_type,
-                "item": item_name,
-                "link": result.get("link", ""),
-            },
-        )
+        try:
+            add_audit_event(
+                "moderation.publish_success",
+                actor_id=admin_id,
+                actor=_admin_actor_label(cb),
+                request_id=str(request_id),
+                details={
+                    "request_type": request_type,
+                    "submission_type": submission_type,
+                    "item": item_name,
+                    "link": result.get("link", ""),
+                },
+            )
+        except Exception:
+            logger.exception("event=moderation.publish.audit_failed request_id=%s", request_id)
 
     except Exception as exc:
         logger.exception(
@@ -6284,6 +6311,9 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
 
     finally:
         _release_request_lock(request_id)
+
+    if completed:
+        await _finish_publish_notifications(cb.bot, entry, notify_key, _admin_actor_label(cb), removed_plugin)
 
 
 @router.callback_query(F.data.startswith("adm:reject:"))
@@ -7261,7 +7291,7 @@ async def on_admin_ban_confirm(cb: CallbackQuery, state: FSMContext) -> None:
 
     removed_count = 0
     if delete_plugins:
-        from user_store import get_user
+        from core.user_store import get_user
         user_data = get_user(user_id)
         username = user_data.get("username", "")
         removal = await remove_user_content(user_id, username)
@@ -7305,7 +7335,7 @@ async def on_admin_appeal_decision(cb: CallbackQuery, state: FSMContext) -> None
         add_audit_event("moderation.appeal_approved", actor_id=cb.from_user.id if cb.from_user else None,
                         actor=_admin_actor_label(cb), request_id=str(request_id))
     elif banfinal:
-        from user_store import update_user
+        from core.user_store import update_user
         if user_id:
             update_user(user_id, banned=True, ban_permanent=True)
         update_request_status(request_id, "rejected", comment="Апелляция отклонена, бан окончательный", actor=_admin_actor_label(cb), actor_id=_actor_id(cb))

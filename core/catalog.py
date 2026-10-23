@@ -3,7 +3,7 @@ import random
 import re
 from typing import Any, Dict, List, Optional
 
-from storage import load_icons, load_plugins
+from core.storage import load_icons, load_plugins
 
 CatalogEntry = Dict[str, Any]
 

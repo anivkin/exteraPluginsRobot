@@ -38,7 +38,7 @@ async def cmd_full_sync(args: argparse.Namespace) -> None:
 
 
 async def cmd_status(args: argparse.Namespace) -> None:
-    from storage import load_plugins, load_icons
+    from core.storage import load_plugins, load_icons
     
     plugins_db = load_plugins()
     icons_db = load_icons()
@@ -67,7 +67,7 @@ async def cmd_status(args: argparse.Namespace) -> None:
 
 
 async def cmd_clear(args: argparse.Namespace) -> None:
-    from storage import (
+    from core.storage import (
         flush_all,
         save_icons,
         save_plugins,

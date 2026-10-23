@@ -23,7 +23,7 @@ from aiogram.types import (
 from bot.context import get_language, get_lang
 from bot.languages import normalize_language
 from bot.callback_tokens import decode_slug, encode_slug
-from plugin_formats import plugin_file_limit
+from core.plugin_formats import plugin_file_limit
 from bot import limits
 from bot.formatting import plain_html, strip_blockquote_tags, telegram_html, user_mention
 from bot.helpers import ack, answer, extract_html_text, spawn_background, try_react_pray
@@ -44,7 +44,7 @@ from bot.keyboards import (
     submit_type_kb,
     user_plugins_kb,
 )
-from storage import QUIZ_QUESTIONS_PER_RUN, build_quiz
+from core.storage import QUIZ_QUESTIONS_PER_RUN, build_quiz
 from bot.cache import get_admins, get_admins_plugins, get_categories
 from bot.services.request_context import author_context
 from bot.services.submission import (
@@ -65,15 +65,15 @@ from bot.services.validation import (
 )
 from bot.states import UserFlow
 from bot.texts import TEXTS, t
-from catalog import find_plugin_by_slug, find_plugin_by_deeplink_token, find_user_plugins, is_external_plugin
+from core.catalog import find_plugin_by_slug, find_plugin_by_deeplink_token, find_user_plugins, is_external_plugin
 from bot.routers.catalog_flow import build_plugin_preview
 from bot.routers.catalog_flow import BOT_USERNAME
 from bot.keyboards import plugin_detail_kb
-from subscription_store import is_subscribed, ALL_SUBSCRIPTION_KEY
+from core.subscription_store import is_subscribed, ALL_SUBSCRIPTION_KEY
 from bot.keyboards import catalog_main_kb, profile_kb, admin_menu_kb
 from bot.states import AdminFlow
-from catalog import find_user_icons
-from request_store import (
+from core.catalog import find_user_icons
+from core.request_store import (
     add_draft_request,
     add_request,
     delete_request_and_file,
@@ -85,8 +85,8 @@ from request_store import (
     update_request_payload,
     update_request_status,
 )
-from user_store import get_user_language, is_user_banned, set_user_language
-from user_store import set_broadcast_enabled, set_paid_broadcast_disable
+from core.user_store import get_user_language, is_user_banned, set_user_language
+from core.user_store import set_broadcast_enabled, set_paid_broadcast_disable
 
 router = Router(name="user-flow")
 router.callback_query.middleware(MenuOwnerMiddleware())
@@ -691,7 +691,7 @@ def _has_pending_appeal(user_id: int) -> bool:
 
 
 def _is_permanent_ban(user_id: int) -> bool:
-    from user_store import get_user
+    from core.user_store import get_user
     return bool(get_user(user_id).get("ban_permanent"))
 
 

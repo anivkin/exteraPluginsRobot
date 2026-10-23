@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import List, Tuple
 
-from storage import load_stats, save_stats
+from core.storage import load_stats, save_stats
 
 
 def record_plugin_open(slug: str) -> None:

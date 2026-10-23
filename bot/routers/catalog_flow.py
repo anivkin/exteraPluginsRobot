@@ -45,7 +45,7 @@ from bot.keyboards import (
 )
 from bot.states import UserFlow
 from bot.texts import t
-from catalog import (
+from core.catalog import (
     SOURCE_ALL,
     SOURCE_OFFICIAL,
     find_icon_by_slug,
@@ -59,20 +59,20 @@ from catalog import (
     search_icons,
     search_plugins,
 )
-from subscription_store import (
+from core.subscription_store import (
     add_subscription,
     is_subscribed,
     list_subscriptions,
     remove_subscription,
 )
-from subscription_store import ALL_SUBSCRIPTION_KEY
-from user_store import (
+from core.subscription_store import ALL_SUBSCRIPTION_KEY
+from core.user_store import (
     has_paid_broadcast_disable,
     is_broadcast_enabled,
 )
-from storage import load_joinly
-from storage import save_joinly
-from request_store import get_request_by_plugin_id, get_user_requests, update_request_payload
+from core.storage import load_joinly
+from core.storage import save_joinly
+from core.request_store import get_request_by_plugin_id, get_user_requests, update_request_payload
 from bot.services.moderation import VOTABLE_REQUEST_STATUSES, forum_text_with_votes, vote_counts
 
 router = Router(name="catalog-flow")
@@ -494,7 +494,7 @@ async def on_profile_broadcast_toggle(cb: CallbackQuery, state: FSMContext) -> N
         await cb.answer()
         return
 
-    from user_store import set_broadcast_enabled
+    from core.user_store import set_broadcast_enabled
 
     enabled = is_broadcast_enabled(user.id)
     set_broadcast_enabled(user.id, not enabled)
@@ -1125,14 +1125,12 @@ async def _render_profile_joinly(target: CallbackQuery | Message, state: FSMCont
 
     bot = target.bot if isinstance(target, Message) else (target.message.bot if target.message else None)
     rows: list[list[InlineKeyboardButton]] = []
+    from bot.services.chat_info import get_chat_labels
+
+    labels = await get_chat_labels(bot, chat_ids) if bot else {}
     for chat_id in chat_ids:
-        title = str(chat_id)
-        if bot:
-            try:
-                chat = await bot.get_chat(chat_id)
-                title = (getattr(chat, "title", None) or getattr(chat, "full_name", None) or str(chat_id)).strip() or str(chat_id)
-            except Exception:
-                title = str(chat_id)
+        identity = labels.get(chat_id, {})
+        title = identity.get("title") or identity.get("name") or str(chat_id)
         rows.append(
             [
                 InlineKeyboardButton(

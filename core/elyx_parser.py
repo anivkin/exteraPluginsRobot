@@ -7,7 +7,7 @@ from pathlib import PurePosixPath
 
 import yaml
 
-from plugin_parser import PluginMetadata, PluginParseError, _version_only
+from core.plugin_parser import PluginMetadata, PluginParseError, _version_only
 
 _MAX_ENTRY = 8 * 1024 * 1024
 _MAX_METADATA = 256 * 1024

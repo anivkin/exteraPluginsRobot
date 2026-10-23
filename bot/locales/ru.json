@@ -797,5 +797,6 @@
   "join_permission_can_send_voice_notes": "Голосовые",
   "join_permission_can_send_polls": "Опросы",
   "join_permission_can_send_other_messages": "Стикеры/GIF",
-  "join_permission_can_add_web_page_previews": "Превью ссылок"
+  "join_permission_can_add_web_page_previews": "Превью ссылок",
+  "admin_request_already_handled": "Эта заявка уже обработана. Повторная публикация не требуется."
 }

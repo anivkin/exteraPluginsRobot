@@ -13,8 +13,8 @@ from bot import limits
 from bot.formatting import plain_html, split_html, strip_blockquote_tags, telegram_html
 from bot.services.moderation import send_media_group
 from bot.texts import t
-from catalog import find_plugin_by_slug
-from request_store import get_all_requests, get_request_by_id, update_request_payload
+from core.catalog import find_plugin_by_slug
+from core.request_store import get_all_requests, get_request_by_id, update_request_payload
 
 logger = logging.getLogger(__name__)
 

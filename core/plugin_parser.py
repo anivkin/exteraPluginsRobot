@@ -72,7 +72,7 @@ def parse_plugin_file(path: Path | str, fallback_version: str | None = None) -> 
     plugin_path = Path(path)
     if not plugin_path.exists():
         raise FileNotFoundError(plugin_path)
-    from plugin_formats import ELYX_EXTENSIONS, plugin_extension, plugin_file_limit
+    from core.plugin_formats import ELYX_EXTENSIONS, plugin_extension, plugin_file_limit
 
     extension = plugin_extension(plugin_path)
     if not extension:
@@ -80,7 +80,7 @@ def parse_plugin_file(path: Path | str, fallback_version: str | None = None) -> 
     if plugin_path.stat().st_size > plugin_file_limit(plugin_path):
         raise PluginParseError("Plugin file exceeds its size limit")
     if extension in ELYX_EXTENSIONS:
-        from elyx_parser import parse_elyx_file
+        from core.elyx_parser import parse_elyx_file
         return parse_elyx_file(plugin_path, fallback_version)
     text = plugin_path.read_text(encoding="utf-8")
     return parse_plugin_text(text, fallback_version=fallback_version)

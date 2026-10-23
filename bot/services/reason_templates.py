@@ -102,7 +102,7 @@ def templates_allowed(entry: dict | None, *, check_access: bool = True) -> bool:
     if not check_access:
         return True
     from bot.services.validation import is_plugin_blocked
-    from user_store import is_user_banned
+    from core.user_store import is_user_banned
 
     plugin = payload.get("plugin") if isinstance(payload.get("plugin"), dict) else {}
     plugin_id = str(plugin.get("id") or "").strip()

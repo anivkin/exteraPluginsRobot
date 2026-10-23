@@ -17,7 +17,7 @@ from aiogram.filters import ChatMemberUpdatedFilter
 from aiogram.filters.chat_member_updated import IS_MEMBER, IS_NOT_MEMBER
 from aiogram.types import CallbackQuery, ChatMemberUpdated, ChatPermissions, EphemeralMessageParameters, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from storage import load_joinly, save_joinly
+from core.storage import load_joinly, save_joinly
 from bot.cache import get_admins_super
 from bot.helpers import ack, try_react_pray
 from bot.context import get_lang

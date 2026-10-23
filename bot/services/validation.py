@@ -1,6 +1,6 @@
 from typing import Any, Dict, Optional, Tuple
 
-from catalog import find_plugin_by_slug, has_official_plugin_id, is_external_plugin
+from core.catalog import find_plugin_by_slug, has_official_plugin_id, is_external_plugin
 from bot.services.publish import make_slug
 from bot.services.versioning import compare_versions, meets_min_supported
 
@@ -107,7 +107,7 @@ def check_duplicate_pending(
     plugin_name: str,
     exclude_user_id: Optional[int] = None,
 ) -> Tuple[bool, Optional[str]]:
-    from request_store import get_requests
+    from core.request_store import get_requests
 
     pending = get_requests(status="pending") + get_requests(status="draft")
 
@@ -154,7 +154,7 @@ def is_plugin_blocked(plugin_id: str) -> bool:
 
 
 def block_plugin(plugin_id: str) -> bool:
-    from storage import load_config, save_config
+    from core.storage import load_config, save_config
     from bot.cache import invalidate
 
     target = str(plugin_id or "").strip()

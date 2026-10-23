@@ -1,4 +1,4 @@
-from plugin_formats import plugin_extension
+from core.plugin_formats import plugin_extension
 import asyncio
 import hashlib
 import logging
@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from storage import load_requests, save_requests
+from core.storage import load_requests, save_requests
 
 logger = logging.getLogger(__name__)
 _requests_cache: Optional[List[Dict[str, Any]]] = None

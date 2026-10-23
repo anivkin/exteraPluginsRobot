@@ -4,8 +4,8 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from request_store import get_all_requests
-from storage import load_stats, save_stats
+from core.request_store import get_all_requests
+from core.storage import load_stats, save_stats
 
 WEEK_TIMEZONE = timezone(timedelta(hours=5))
 DECISION_STATUSES = frozenset({"published", "rejected", "rework", "deleted"})

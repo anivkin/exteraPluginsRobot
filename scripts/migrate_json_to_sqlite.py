@@ -162,7 +162,7 @@ def main() -> int:
     os.environ["SQLITE_PATH"] = str(sqlite_path)
     os.environ["DATA_DIR"] = str(sqlite_path.parent)
 
-    from storage import (
+    from core.storage import (
         ADMIN_SQLITE_PATH,
         CATALOG_SQLITE_PATH,
         flush_all,

@@ -6,7 +6,7 @@ from aiogram.types import FSInputFile
 
 from bot import limits
 from bot.helpers import blank_and_delete, fit_filename
-from plugin_formats import payload_extension, plugin_extension
+from core.plugin_formats import payload_extension, plugin_extension
 from bot.services.bot_mtproto import get_file_client
 
 logger = logging.getLogger(__name__)
