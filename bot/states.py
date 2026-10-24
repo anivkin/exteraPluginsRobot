@@ -30,6 +30,7 @@ class UserFlow(StatesGroup):
     entering_admin_comment = State()
     entering_publish_not_before = State()
     entering_moderation_vote_reason = State()
+    choosing_moderation_vote_templates = State()
     entering_joinly_chat = State()
     entering_appeal = State()
     entering_moderation_contact = State()

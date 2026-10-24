@@ -1,5 +1,9 @@
 {
   "reject": [
+    "Usefulness review — No practical use case is demonstrated. Describe a specific task and show who benefits from the plugin and when.",
+    "Usefulness review — The plugin does not simplify user actions or provide a meaningful result. Add a useful use case and demonstrate its benefit.",
+    "Usefulness review — Installation and setup are more complicated than the task itself. Simplify usage and show what work the plugin saves.",
+    "Usefulness review — The examples do not demonstrate the claimed benefit. Provide a before-and-after example showing a practical result.",
     "Rule 2.1 — Duplicate plugin: no clear advantage. Add new features or a measurable improvement over the existing plugin.",
     "Rule 2.1 — The client already has this feature, including announced features. Add capabilities the built-in feature lacks.",
     "Rule 2.2 — A single cosmetic edit or preset action. Turn it into a useful tool with broader capabilities.",
@@ -36,6 +40,8 @@
     "No issues, ready for publication"
   ],
   "update_reject": [
+    "Usefulness review — The changes provide no practical benefit over the published version. Demonstrate a useful new use case or a specific improvement.",
+    "Usefulness review — The update removes useful features without an equivalent replacement. Preserve those use cases or explain the change in behavior.",
     "Update requirements — The changelog is missing or unclear. List new features, fixes and differences from the published version.",
     "Update requirements — No new examples of the changes. Attach separate screenshots or a video of the new version demonstrating the advertised changes.",
     "Technical requirements — The update version is not higher than the published version. Increase version and submit a new file.",

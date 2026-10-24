@@ -65,6 +65,8 @@ from bot.keyboards import (
     admin_source_detail_kb,
     admin_source_del_confirm_kb,
     admin_menu_kb,
+    admin_vote_settings_kb,
+    admin_vote_templates_kb,
     admin_stats_kb,
     moderation_person_kb,
     moderation_week_kb,
@@ -146,7 +148,7 @@ from core.request_store import (
     update_request_status,
 )
 from core.storage import ADMIN_SQLITE_PATH, CATALOG_SQLITE_PATH, DATA_DIR, QUIZ_OPTIONS_PER_QUESTION, QUIZ_QUESTIONS_PER_RUN, add_quiz_question, delete_quiz_question, load_config, load_plugins, load_quiz_questions, restore_quiz_defaults, save_config, save_plugins, update_quiz_question
-from core.user_store import ban_user, get_banned_users, is_broadcast_enabled, list_users, unban_user
+from core.user_store import ban_user, get_banned_users, hidden_moderation_templates, is_broadcast_enabled, list_users, moderation_preferences, set_moderation_preference, set_moderation_template_hidden, unban_user
 from core.subscription_store import list_subscribers
 from core.catalog import invalidate_catalog_cache
 
@@ -763,7 +765,7 @@ def _is_top_level_token(token: str) -> bool:
 
 
 _PAGINATED_TOKEN_RE = re.compile(
-    r"^(adm:(?:queue:[a-z_]+|updates|scheduled|scheduled_posts|banned|auditlog|rejapp|audit(?::[a-z]+)?)):\d+$"
+    r"^(adm:(?:queue:[a-z_]+|vtemplates:[a-z_]+|updates|scheduled|scheduled_posts|banned|auditlog|rejapp|audit(?::[a-z]+)?)):\d+$"
 )
 
 
@@ -904,7 +906,7 @@ def _post_section_text(lang: str) -> str:
 async def _render_config(cb: CallbackQuery, state: FSMContext) -> None:
     lang = _lang_for(cb)
     await state.set_state(AdminFlow.menu)
-    await answer(cb, _tr(cb, "admin_settings_title"), admin_config_kb(lang=lang), "admin")
+    await answer(cb, _tr(cb, "admin_settings_title"), admin_config_kb(lang=lang, role=_admin_menu_role(cb)), "admin")
 
 
 _CONFIG_FIELD_LABEL_KEYS: dict[str, str] = {
@@ -1419,6 +1421,8 @@ _SUPER_ONLY_NAV_PREFIXES = (
 
 
 def _nav_token_allowed(cb: CallbackQuery, token: str) -> bool:
+    if token == "adm:config":
+        return True
     if not token.startswith(_SUPER_ONLY_NAV_PREFIXES):
         return True
     return _is_super_admin(cb)
@@ -1445,6 +1449,11 @@ async def _render_nav_token(cb: CallbackQuery, state: FSMContext, token: str) ->
         await _render_quiz_list(cb, state, 0)
     elif token == "adm:notifs":
         await _render_admin_notifications(cb, state)
+    elif token == "adm:vote_prefs":
+        await _render_vote_preferences(cb, state)
+    elif token.startswith("adm:vtemplates:"):
+        parts = token.split(":")
+        await _render_vote_template_visibility(cb, state, parts[2], int(parts[3]))
     elif token.startswith("adm:config_section:"):
         section = token.split(":")[2]
         if section == "admins":
@@ -1816,6 +1825,44 @@ async def _render_admin_notifications(target: CallbackQuery | Message, state: FS
         admin_notification_settings_kb(prefs, labels, lang=lang),
         "admin",
     )
+
+
+async def _render_vote_preferences(target: CallbackQuery | Message, state: FSMContext) -> None:
+    if not target.from_user or not _ensure_admin(target):
+        return
+    lang = _lang_for(target)
+    prefs = moderation_preferences(target.from_user.id)
+    counts = {}
+    for kind in TEMPLATE_CONFIG_KEYS:
+        templates = _load_templates(kind)
+        hidden = set(hidden_moderation_templates(target.from_user.id, kind))
+        counts[kind] = (sum(reason_templates.reason_template_id(value) not in hidden for value in templates), len(templates))
+    text = t("admin_vote_settings_title", lang,
+             visibility=t("admin_vote_templates_shown" if prefs["show_templates"] else "admin_vote_templates_hidden", lang),
+             mode=t(f"admin_vote_mode_{prefs['template_input']}", lang))
+    await state.set_state(AdminFlow.menu)
+    await answer(target, text, admin_vote_settings_kb(prefs, lang, counts), "admin")
+
+
+async def _render_vote_template_visibility(target: CallbackQuery, state: FSMContext, kind: str, page: int = 0) -> None:
+    if not target.from_user or not _ensure_admin(target) or kind not in TEMPLATE_CONFIG_KEYS:
+        return
+    lang = _lang_for(target)
+    templates = _load_templates(kind, lang)
+    hidden = set(hidden_moderation_templates(target.from_user.id, kind))
+    _, _, page, pages = template_page(templates, page)
+    lines = []
+    for index, value in reason_templates.template_pages(templates)[page]:
+        text = plain_html(" ".join(value.split()))
+        if reason_templates.reason_template_id(templates[index]) in hidden:
+            text = f"<s>{text}</s>"
+        lines.append(f"<b>{index + 1}.</b> {text}")
+    text = t("admin_vote_templates_visibility", lang,
+             title=t(f"admin_vote_templates_{kind}", lang),
+             visible=sum(reason_templates.reason_template_id(value) not in hidden for value in templates),
+             total=len(templates), templates="\n".join(lines) or "—", page=page + 1, pages=pages)
+    await state.set_state(AdminFlow.menu)
+    await answer(target, text, admin_vote_templates_kb(kind, templates, hidden, page, lang), "admin")
 
 
 async def _render_updates_list(target: CallbackQuery | Message, state: FSMContext, page: int) -> None:
@@ -3932,6 +3979,67 @@ async def on_admin_notifications(cb: CallbackQuery, state: FSMContext) -> None:
     await ack(cb)
 
 
+@router.callback_query(F.data == "adm:vote_prefs")
+async def on_admin_vote_preferences(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    await _nav_push(state, "adm:config")
+    await _nav_push(state, "adm:vote_prefs")
+    await _render_vote_preferences(cb, state)
+    await ack(cb)
+
+
+@router.callback_query(F.data.regexp(r"^adm:vtemplates:(reject|approve|update_reject|update_approve):\d+$"))
+async def on_admin_vote_templates(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    _, _, kind, page = (cb.data or "").split(":")
+    await _nav_push(state, cb.data)
+    await _render_vote_template_visibility(cb, state, kind, int(page))
+    await ack(cb)
+
+
+@router.callback_query(F.data.regexp(r"^adm:vtemplate:(reject|approve|update_reject|update_approve):[0-9a-f]{20}:\d+$"))
+async def on_admin_vote_template_toggle(cb: CallbackQuery, state: FSMContext) -> None:
+    user = cb.from_user
+    if not user or not _ensure_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    _, _, kind, identity, page = (cb.data or "").split(":")
+    if kind not in TEMPLATE_CONFIG_KEYS or identity not in {reason_templates.reason_template_id(value) for value in _load_templates(kind)}:
+        await cb.answer(_tr(cb, "reason_templates_changed"), show_alert=True)
+        return
+    hidden = identity not in hidden_moderation_templates(user.id, kind)
+    set_moderation_template_hidden(user.id, kind, identity, hidden)
+    add_audit_event("admin.vote_template_visibility_changed", actor_id=user.id,
+                    actor=user.username or user.full_name or "", details={"kind": kind, "template_id": identity, "hidden": hidden})
+    await _render_vote_template_visibility(cb, state, kind, int(page))
+    await ack(cb)
+
+
+@router.callback_query(F.data.startswith("adm:vote_prefs:"))
+async def on_admin_vote_preference_change(cb: CallbackQuery, state: FSMContext) -> None:
+    user = cb.from_user
+    if not user or not _ensure_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    action = (cb.data or "").removeprefix("adm:vote_prefs:")
+    if action == "templates":
+        key, value = "show_templates", not moderation_preferences(user.id)["show_templates"]
+    elif action in {"mode:buttons", "mode:reply"}:
+        key, value = "template_input", action.split(":")[1]
+    else:
+        await cb.answer()
+        return
+    set_moderation_preference(user.id, key, value)
+    add_audit_event("admin.vote_preference_changed", actor_id=user.id,
+                    actor=user.username or user.full_name or "", details={"key": key, "value": value})
+    await _render_vote_preferences(cb, state)
+    await ack(cb)
+
+
 @router.callback_query(F.data.startswith("adm:notifs:toggle:"))
 async def on_admin_notifications_toggle(cb: CallbackQuery, state: FSMContext) -> None:
     lang = _lang_for(cb)
@@ -4139,6 +4247,9 @@ async def on_admin_publish_examples(cb: CallbackQuery, state: FSMContext) -> Non
         return
     from bot.services.example_media import process_pending_example_media
 
+    await _nav_push(state, "adm:config")
+    await _nav_push(state, "adm:maint")
+    await state.set_state(AdminFlow.menu)
     result = await process_pending_example_media(cb.bot, limit=100)
     await answer(
         cb,
@@ -4149,7 +4260,7 @@ async def on_admin_publish_examples(cb: CallbackQuery, state: FSMContext) -> Non
             pending=result.get("pending", 0),
             uncertain=result.get("uncertain", 0),
         ),
-        admin_plugins_section_kb(lang=_lang_for(cb), role=_admin_menu_role(cb)),
+        admin_maintenance_kb(_lang_for(cb)),
         "admin",
     )
     await ack(cb)
@@ -4161,9 +4272,6 @@ async def on_admin_config(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
 
-    if not _ensure_admin_role(cb, "super"):
-        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
-        return
     await _nav_push(state, "adm:config")
     await _render_config(cb, state)
     await ack(cb)
@@ -4681,6 +4789,7 @@ async def on_admin_banned(cb: CallbackQuery, state: FSMContext) -> None:
         return
 
     page = int(cb.data.split(":")[2])
+    await _nav_push(state, f"adm:banned:{page}")
     await _render_banned(cb, state, page)
     await ack(cb)
 
@@ -4699,6 +4808,7 @@ async def _render_banned(target: CallbackQuery | Message, state: FSMContext, pag
     else:
         caption = f"<b>{_tr(target, 'admin_btn_banned')}</b>\n\n{_tr(target, 'admin_banned_empty')}"
     await state.set_state(AdminFlow.menu)
+    await state.update_data(banned_page=page)
     await answer(target, caption, admin_banned_kb(items, page, total_pages, lang=lang), "admin")
 
 
@@ -7567,6 +7677,9 @@ async def on_admin_blocklist(cb: CallbackQuery, state: FSMContext) -> None:
     if not _ensure_admin_role(cb, "super"):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
+    data = await state.get_data()
+    await _nav_push(state, f"adm:banned:{int(data.get('banned_page') or 0)}")
+    await _nav_push(state, "adm:blocklist")
     await _render_blocklist(cb, state)
     await ack(cb)
 
@@ -7658,6 +7771,7 @@ async def on_admin_quiz(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
     page = int(cb.data.split(":")[2])
+    await _nav_push(state, "adm:config")
     await _nav_push(state, "adm:quiz:0")
     await _render_quiz_list(cb, state, page)
     await ack(cb)

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 import time
 from copy import deepcopy
 from typing import Any, Dict, List, Optional
@@ -112,6 +113,54 @@ def get_user_language(user_id: int) -> Optional[str]:
 def get_user(user_id: int) -> Dict[str, Any]:
     _ensure_loaded_sync()
     return _users_cache.get(str(user_id), {}).copy()
+
+
+def moderation_preferences(user_id: int) -> dict:
+    raw = get_user(user_id).get("moderation_preferences")
+    raw = raw if isinstance(raw, dict) else {}
+    return {
+        "show_templates": raw.get("show_templates") is not False,
+        "template_input": "reply" if raw.get("template_input") == "reply" else "buttons",
+    }
+
+
+def set_moderation_preference(user_id: int, key: str, value) -> None:
+    if key == "show_templates":
+        if type(value) is not bool:
+            raise ValueError("show_templates must be a boolean")
+    elif key == "template_input":
+        if value not in ("buttons", "reply"):
+            raise ValueError("template_input must be buttons or reply")
+    else:
+        raise ValueError("Unknown moderation preference")
+    prefs = moderation_preferences(user_id)
+    prefs[key] = value
+    update_user(user_id, moderation_preferences=prefs)
+
+
+def hidden_moderation_templates(user_id: int, kind: str) -> list[str]:
+    raw = get_user(user_id).get("hidden_moderation_templates")
+    values = raw.get(kind) if isinstance(raw, dict) else None
+    if not isinstance(values, list):
+        return []
+    return list(dict.fromkeys(value for value in values
+                             if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{20}", value)))
+
+
+def set_moderation_template_hidden(user_id: int, kind: str, template_id: str, hidden: bool) -> None:
+    if kind not in {"reject", "approve", "update_reject", "update_approve"}:
+        raise ValueError("Unknown moderation template kind")
+    if not isinstance(template_id, str) or not re.fullmatch(r"[0-9a-f]{20}", template_id) or type(hidden) is not bool:
+        raise ValueError("Invalid moderation template preference")
+    raw = get_user(user_id).get("hidden_moderation_templates")
+    prefs = dict(raw) if isinstance(raw, dict) else {}
+    values = hidden_moderation_templates(user_id, kind)
+    if hidden and template_id not in values:
+        values.append(template_id)
+    elif not hidden and template_id in values:
+        values.remove(template_id)
+    prefs[kind] = values
+    update_user(user_id, hidden_moderation_templates=prefs)
 
 
 def is_broadcast_enabled(user_id: int) -> bool:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import hashlib
 import json
 import re
 from copy import deepcopy
@@ -9,7 +10,7 @@ from pathlib import Path
 
 from bot.languages import SUPPORTED_LANGUAGES, normalize_language
 
-REASON_TEMPLATES_VERSION = 1
+REASON_TEMPLATES_VERSION = 3
 TEMPLATES_LIMIT = 30
 TEMPLATE_PAGE_SIZE = 6
 TEMPLATE_PAGE_BUDGET = 2600
@@ -29,6 +30,7 @@ DEFAULT_APPROVE_TEMPLATES = DEFAULTS["approve"]
 DEFAULT_REJECT_TEMPLATES = DEFAULTS["reject"]
 DEFAULT_UPDATE_APPROVE_TEMPLATES = DEFAULTS["update_approve"]
 DEFAULT_UPDATE_REJECT_TEMPLATES = DEFAULTS["update_reject"]
+ADDITIONS = {"reject": DEFAULTS["reject"][:4], "update_reject": DEFAULTS["update_reject"][:2]}
 LEGACY_REJECT_TEMPLATES = _TRANSLATIONS["ru"]["legacy_reject"]
 LEGACY_UPDATE_REJECT_TEMPLATES = _TRANSLATIONS["ru"]["legacy_update_reject"]
 LEGACY_DEFAULTS = {**DEFAULTS, "reject": LEGACY_REJECT_TEMPLATES, "update_reject": LEGACY_UPDATE_REJECT_TEMPLATES}
@@ -67,6 +69,18 @@ def load_reason_templates(config: dict, kind: str = "reject", lang: str = "ru") 
             for item in values if (value := str(item).strip())]
 
 
+def reason_template_id(value: str) -> str:
+    canonical = localize_reason(str(value).strip(), "ru")
+    return hashlib.blake2s(canonical.encode("utf-8"), digest_size=10).hexdigest()
+
+
+def visible_reason_templates(values: list[str], kind: str, user_id: int) -> list[str]:
+    from core.user_store import hidden_moderation_templates
+
+    hidden = set(hidden_moderation_templates(user_id, kind))
+    return [value for value in values if reason_template_id(value) not in hidden] if hidden else values
+
+
 def upgrade_reason_templates(config: dict) -> bool:
     try:
         current = int(config.get("reason_templates_version") or 0)
@@ -86,6 +100,12 @@ def upgrade_reason_templates(config: dict) -> bool:
         raw = config.get(key)
         if not isinstance(raw, list) or raw == LEGACY_DEFAULTS[kind]:
             config[key] = list(DEFAULTS[kind])
+        elif raw and kind in ADDITIONS:
+            known = {localize_reason(str(value), "ru") for value in raw}
+            additions = [value for value in ADDITIONS[kind] if value not in known]
+            values = [*raw, *additions[:max(0, TEMPLATES_LIMIT - len(raw))]]
+            priority = {value: index for index, value in enumerate(ADDITIONS[kind])}
+            config[key] = sorted(values, key=lambda value: priority.get(localize_reason(str(value), "ru"), len(priority)))
     config["templates_archive"] = archive
     config["reason_templates_version"] = REASON_TEMPLATES_VERSION
     return True
@@ -153,5 +173,25 @@ def template_page(templates: list[str], page: int = 0) -> tuple[str, list[int], 
     pages = template_pages(templates)
     page = max(0, min(int(page), len(pages) - 1))
     items = pages[page]
-    text = "\n\n".join(f"<b>{idx + 1}.</b> {html.escape(value, quote=False)}" for idx, value in items)
+    text = "\n".join(f"<b>{idx + 1}.</b> {html.escape(' '.join(value.split()), quote=False)}" for idx, value in items)
     return text, list(dict.fromkeys(idx for idx, _ in items)), page, len(pages)
+
+
+def selected_templates(values, count: int) -> list[int]:
+    if not isinstance(values, list):
+        return []
+    return list(dict.fromkeys(value for value in values if type(value) is int and 0 <= value < count))
+
+
+def parse_template_numbers(text: str, count: int) -> list[int]:
+    if not isinstance(text, str) or not re.fullmatch(r"\s*[0-9]+(?:[\s,;]+[0-9]+)*\s*", text):
+        raise ValueError("Enter reason numbers separated by commas or spaces")
+    numbers = [int(value) for value in re.findall(r"[0-9]+", text)]
+    if any(value < 1 or value > count for value in numbers):
+        raise ValueError("Reason number is out of range")
+    return list(dict.fromkeys(value - 1 for value in numbers))
+
+
+def combine_template_reasons(templates: list[str], selected: list[int]) -> str:
+    return "\n".join(f"{position + 1}. {html.escape(templates[index], quote=False)}"
+                     for position, index in enumerate(selected_templates(selected, len(templates))))

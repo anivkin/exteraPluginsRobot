@@ -116,6 +116,10 @@ class CommandStateResetMiddleware(BaseMiddleware):
             if command:
                 if in_input:
                     try:
+                        if event.from_user:
+                            from bot.routers.moderation_flow import cancel_vote_input
+
+                            await cancel_vote_input(event.bot, state, event.from_user.id)
                         await state.set_state(None)
                         data["raw_state"] = None
                         logger.info(
