@@ -232,6 +232,14 @@ def utf16_length(value: str) -> int:
     return len(value.encode("utf-16-le")) // 2
 
 
+def normalize_custom_emoji(value: str) -> str:
+    return re.sub(
+        r"<a\s+href=(['\"])tg://emoji\?id=(\d+)\1\s*>(.*?)</a>",
+        lambda match: f'<tg-emoji emoji-id="{match[2]}">{match[3]}</tg-emoji>',
+        value or "", flags=re.IGNORECASE | re.DOTALL,
+    )
+
+
 def visible_html_length(value: str) -> int:
     return utf16_length(html.unescape(_TAG_RE.sub("", str(value or ""))))
 

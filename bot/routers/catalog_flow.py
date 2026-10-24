@@ -74,6 +74,7 @@ from core.storage import load_joinly
 from core.storage import save_joinly
 from core.request_store import get_request_by_plugin_id, get_user_requests, update_request_payload
 from bot.services.moderation import VOTABLE_REQUEST_STATUSES, forum_text_with_votes, vote_counts
+from bot.services.inline import answer_inline
 
 router = Router(name="catalog-flow")
 router.callback_query.middleware(MenuOwnerMiddleware())
@@ -369,7 +370,7 @@ def build_inline_preview(entry: Dict[str, Any], lang: str, kind: str = "plugin")
     if kind == "plugin":
         category = str(entry.get("category") or "").strip()
         icon_id = CATEGORY_ICONS.get(category) or ICONS["plugin"]
-        fallback = CATEGORY_FALLBACKS.get(category, "")
+        fallback = CATEGORY_FALLBACKS.get(category, "🧩")
         lines = [f'<tg-emoji emoji-id="{icon_id}">{fallback}</tg-emoji> <b>{name}</b> by <code>{author}</code>']
     else:
         lines = [t("catalog_inline_header", lang, name=name, author=author)]
@@ -1515,7 +1516,7 @@ async def on_inline(query: InlineQuery) -> None:
                 disable_web_page_preview=False,
             ),
         )
-        await query.answer([result], cache_time=60, is_personal=True)
+        await answer_inline(query, [result], cache_time=60, is_personal=True)
         return
 
     results = []
@@ -1568,7 +1569,7 @@ async def on_inline(query: InlineQuery) -> None:
     icons = search_icons(text, limit=10)
 
     if not results and not plugins and not icons:
-        await query.answer([], cache_time=60)
+        await answer_inline(query, [], cache_time=60)
         return
 
     for idx, plugin in enumerate(plugins):
@@ -1645,7 +1646,7 @@ async def on_inline(query: InlineQuery) -> None:
 
     cache_time = 0 if request_result_added else 60
     try:
-        await query.answer(results, cache_time=cache_time, is_personal=True)
+        await answer_inline(query, results, cache_time=cache_time, is_personal=True)
     except TelegramBadRequest:
         article_results = [item for item in results if isinstance(item, InlineQueryResultArticle)]
         if len(article_results) == len(results):
@@ -1654,4 +1655,4 @@ async def on_inline(query: InlineQuery) -> None:
             "Inline cached media rejected; retrying with article results only",
             exc_info=True,
         )
-        await query.answer(article_results, cache_time=0, is_personal=True)
+        await answer_inline(query, article_results, cache_time=0, is_personal=True)

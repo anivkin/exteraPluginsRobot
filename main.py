@@ -8,7 +8,7 @@ from aiogram.enums import ParseMode
 from bot.telemetry import TelegramRequestTimingMiddleware
 
 from bot.cache import get_config, preload_cache
-from bot.routers import admin_flow, author_flow, catalog_flow, dialog_flow, user_flow, joinly_flow, moderation_flow, poster_flow
+from bot.routers import admin_flow, author_flow, catalog_flow, dialog_flow, inline_flow, user_flow, joinly_flow, moderation_flow, poster_flow
 from bot.middlewares import (
     RequestCallbackMiddleware,
     CallbackAckWatchdogMiddleware,
@@ -193,6 +193,7 @@ async def main() -> None:
     dp.callback_query.outer_middleware(RequestCallbackMiddleware())
     dp.message.outer_middleware(CommandStateResetMiddleware())
     
+    dp.include_router(inline_flow.router)
     dp.include_router(dialog_flow.router)
     dp.include_router(author_flow.router)
     dp.include_router(admin_flow.router)
@@ -209,7 +210,10 @@ async def main() -> None:
 
     logger.info("Starting bot...")
 
-    await dp.start_polling(bot, drop_pending_updates=True)
+    allowed_updates = dp.resolve_used_update_types()
+    logger.info("event=inline.formatting.ready chosen_inline_result=%s botfather=/setinlinefeedback:100%%",
+                "chosen_inline_result" in allowed_updates)
+    await dp.start_polling(bot, allowed_updates=allowed_updates, drop_pending_updates=True)
 
 
 if __name__ == "__main__":

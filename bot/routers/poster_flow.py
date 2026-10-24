@@ -22,6 +22,7 @@ from aiogram.types import (
     InlineQueryResultCachedPhoto,
     InlineQueryResultCachedVideo,
     InputTextMessageContent,
+    InputRichMessageContent,
     Message,
 )
 
@@ -35,6 +36,7 @@ from bot.menu_owner import MenuOwnerMiddleware
 from bot.states import PosterFlow
 from bot.texts import t
 from bot.services import poster
+from bot.services.inline import answer_inline, fit_inline_html
 
 logger = logging.getLogger(__name__)
 router = Router(name="poster-flow")
@@ -1062,18 +1064,22 @@ def _is_post_id_query(query: InlineQuery) -> bool:
     return bool(q) and poster.get_post(q) is not None
 
 
-def _inline_text_result(post_id: str, title: str, text: str, kb) -> InlineQueryResultArticle:
+def _inline_text_result(post_id: str, title: str, text: str, kb, rich_message=None) -> InlineQueryResultArticle:
     plain_text = html.unescape(re.sub(r"<[^>]+>", "", text))
-    if len(plain_text) > limits.MESSAGE_TEXT:
-        plain_text = plain_text[: limits.MESSAGE_TEXT - 1].rstrip() + "…"
+    content = (
+        InputRichMessageContent(rich_message=rich_message)
+        if rich_message is not None else
+        InputTextMessageContent(
+            message_text=fit_inline_html(text, limits.MESSAGE_TEXT),
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+    )
     return InlineQueryResultArticle(
         id=post_id,
         title=title,
         description=plain_text[:80],
-        input_message_content=InputTextMessageContent(
-            message_text=plain_text or "—",
-            disable_web_page_preview=True,
-        ),
+        input_message_content=content,
         reply_markup=kb,
     )
 
@@ -1082,7 +1088,7 @@ def _inline_text_result(post_id: str, title: str, text: str, kb) -> InlineQueryR
 async def on_inline_post(query: InlineQuery) -> None:
     post = poster.get_post((query.query or "").strip())
     if not post:
-        await query.answer([], cache_time=1, is_personal=False)
+        await answer_inline(query, [], cache_time=1, is_personal=False)
         return
     content = post.get("content") or {}
     text = poster.normalize_custom_emoji(content.get("html_text") or "") or "—"
@@ -1092,25 +1098,30 @@ async def on_inline_post(query: InlineQuery) -> None:
     title = t("poster_inline_title", get_lang(query.from_user.id if query.from_user else None))
 
     inline_media = media[0] if media else None
-    media_bot_id = inline_media.get("bot_id") if isinstance(inline_media, dict) else None
     current_bot_id = getattr(query.bot, "id", None)
-    try:
-        media_belongs_to_bot = (
-            not media_bot_id
-            or not current_bot_id
-            or int(media_bot_id) == int(current_bot_id)
-        )
-    except (TypeError, ValueError):
-        media_belongs_to_bot = False
+
+    def media_for_bot(item):
+        if not isinstance(item, dict) or not item.get("file_id"):
+            return False
+        try:
+            return not item.get("bot_id") or int(item["bot_id"]) == int(current_bot_id)
+        except (TypeError, ValueError):
+            return False
+
+    media_belongs_to_bot = media_for_bot(inline_media)
     inline_file_id = (
         str(inline_media.get("file_id") or "").strip()
         if isinstance(inline_media, dict)
         else ""
     )
     caption_fits = poster.visible_length(text) <= limits.CAPTION
+    rich_message = None
+    if content.get("rich") and not poster.rich_unsupported_media(content) and all(media_for_bot(item) for item in media):
+        rich_message = poster.build_rich_message(content)
+    fallback_text = telegram_html(text) if content.get("rich") else text
 
     uses_cached_media = bool(
-        inline_media and inline_file_id and media_belongs_to_bot and caption_fits
+        inline_media and inline_file_id and media_belongs_to_bot and caption_fits and rich_message is None
     )
     if uses_cached_media:
         item = inline_media
@@ -1129,19 +1140,23 @@ async def on_inline_post(query: InlineQuery) -> None:
         else:
             result = InlineQueryResultCachedPhoto(photo_file_id=file_id, **common)
     else:
-        result = _inline_text_result(post_id, title, text, kb)
+        result = _inline_text_result(post_id, title, fallback_text, kb, rich_message)
     try:
-        await query.answer([result], cache_time=1, is_personal=False)
-    except TelegramBadRequest:
-        if not uses_cached_media:
+        await answer_inline(query, [result], cache_time=1, is_personal=False)
+        logger.info("event=poster.inline.answered post_id=%s mode=%s", post_id,
+                    "rich" if rich_message is not None else "media" if uses_cached_media else "text")
+    except TelegramBadRequest as exc:
+        logger.warning("event=poster.inline.rejected post_id=%s reason=%s", post_id, exc.message)
+        if not uses_cached_media and rich_message is None:
             raise
         logger.warning(
-            "poster: cached inline media rejected, using text fallback post=%s",
+            "poster: inline media or rich message rejected, using formatted text fallback post=%s",
             post_id,
             exc_info=True,
         )
-        await query.answer(
-            [_inline_text_result(post_id, title, text, kb)],
+        await answer_inline(
+            query,
+            [_inline_text_result(post_id, title, fallback_text, kb)],
             cache_time=1,
             is_personal=False,
         )

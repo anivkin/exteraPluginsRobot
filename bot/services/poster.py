@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from bot import limits
-from bot.formatting import telegram_html, visible_html_length
+from bot.formatting import normalize_custom_emoji, telegram_html, visible_html_length
 from bot.helpers import BLANK_CHAR
 from bot.services.channel_text import editing_userbot, send_description, try_edit
 
@@ -19,11 +19,6 @@ from core.storage import load_poster, save_poster
 logger = logging.getLogger(__name__)
 
 POST_STATUSES = ("scheduled", "sending", "sent", "failed", "canceled")
-
-_TG_EMOJI_ANCHOR_RE = re.compile(
-    r'<a\s+href="tg://emoji\?id=(\d+)"\s*>(.*?)</a>', re.IGNORECASE | re.DOTALL
-)
-
 
 @dataclass(slots=True)
 class SentContent:
@@ -67,12 +62,6 @@ async def _rollback_sent_messages(bot, chat_id: int, messages: List[Any]) -> Non
                 message_id,
                 exc_info=True,
             )
-
-
-def normalize_custom_emoji(html: str) -> str:
-    if not html:
-        return ""
-    return _TG_EMOJI_ANCHOR_RE.sub(r'<tg-emoji emoji-id="\1">\2</tg-emoji>', html)
 
 
 def updated_block_title() -> str:
