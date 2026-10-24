@@ -1,6 +1,6 @@
 # exteraPluginsRobot
 
-![Screenshot 1](img/welcome.png)
+![Screenshot 1](img/welcome.jpg)
 
 Telegram bot written with **aiogram** for managing the [@exteraPluginsSup](https://t.me/exteraPluginsSup) catalog: submissions, moderation voting, channel publishing, scheduled posts, and group join settings (**Joinly**).
 

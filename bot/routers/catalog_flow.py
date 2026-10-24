@@ -30,7 +30,8 @@ from bot.languages import category_labels, localized_value
 from core.categories import categories_for
 from bot.callback_tokens import decode_slug, encode_slug
 from bot.formatting import quote_html
-from bot.helpers import ack, answer, link_preview_options, strip_html
+from bot.helpers import ack, answer, image_path, link_preview_options, strip_html
+from bot.helpers import with_hidden_preview_link as _with_hidden_preview_link
 from bot.icons import CATEGORY_FALLBACKS, CATEGORY_ICONS, ICONS
 from bot.menu_owner import MenuOwnerMiddleware
 from bot.keyboards import (
@@ -87,16 +88,17 @@ SOURCE_PAGE_SIZE = 8
 
 
 def _github_img_url(image_key: str) -> str:
-    return f"{GITHUB_IMG_BASE_URL}/{image_key}.png?raw=true"
+    path = image_path(image_key)
+    filename = path.name if path else f"{image_key}.jpg"
+    return f"{GITHUB_IMG_BASE_URL}/{filename}?raw=true"
 
 
-def _plugin_category_preview_url(category_key: str) -> str:
-    image_key = "cat_fun" if category_key == "fun" else "cat_all"
+def _plugin_category_preview_url(category_key: str, lang: str = "en") -> str:
+    keys = categories_for(category_key)
+    image_key = f"cat_{keys[0]}" if keys else "cat_all"
+    if lang == "ru":
+        image_key += "_ru"
     return _github_img_url(image_key)
-
-
-def _with_hidden_preview_link(text: str, url: str) -> str:
-    return f'<a href="{html.escape(url, quote=True)}">&#8203;</a>{text}'
 
 
 def _plugin_source_label(entry: Dict[str, Any]) -> str:
@@ -1593,7 +1595,7 @@ async def on_inline(query: InlineQuery) -> None:
         category_key = (categories_for(plugin) or [""])[0]
         category_fallback = CATEGORY_FALLBACKS.get(category_key, "")
         title = f"{category_fallback} {name}"
-        preview_url = _plugin_category_preview_url(category_key)
+        preview_url = _plugin_category_preview_url(category_key, lang)
         preview = _with_hidden_preview_link(build_inline_preview(plugin, lang, "plugin"), preview_url)
         description = _inline_description(locale.get("description") or t("catalog_inline_no_description", lang))
         link = plugin.get("channel_message", {}).get("link")

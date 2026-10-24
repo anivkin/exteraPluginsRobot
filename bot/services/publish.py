@@ -13,6 +13,7 @@ from aiogram.types import FSInputFile
 
 from bot.formatting import join_plain, plain_html, strip_blockquote_tags, telegram_html, visible_html_length
 from bot.helpers import blank_and_delete, fit_filename
+from bot.icons import emoji_html
 from bot.services.channel_text import editing_userbot, send_description, try_edit
 from core.storage import flush_documents, load_icons, load_plugins, load_updated, save_icons, save_plugins, save_updated
 from core.request_store import update_request_status
@@ -111,7 +112,7 @@ def build_channel_post(entry: Dict[str, Any], checked_on: Optional[str] = None) 
         if category.get("tag_en"):
             tags.append(category["tag_en"])
 
-    settings = "✅" if plugin.get("has_ui_settings") else "❌"
+    settings = emoji_html("yes" if plugin.get("has_ui_settings") else "no")
     checked = checked_on or payload.get("checked_on")
 
     author = plain_html(plugin.get("author", ""))

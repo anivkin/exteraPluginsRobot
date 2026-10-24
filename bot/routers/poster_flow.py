@@ -192,7 +192,7 @@ def _posts_kb(posts: list, lang: str, tz: timezone | None = None) -> InlineKeybo
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def _exit_screen(target, state: FSMContext, text: str, kb) -> None:
+async def _exit_screen(target, state: FSMContext, text: str, kb, image: str | None = None) -> None:
     data = await state.get_data()
     preview_ids = _preview_message_ids(data)
     had_preview = bool(preview_ids or data.get("preview_ctrl_msg_id"))
@@ -203,11 +203,8 @@ async def _exit_screen(target, state: FSMContext, text: str, kb) -> None:
         preview_post_msg_ids=[],
         preview_ctrl_msg_id=None,
     )
-    if had_preview:
-        await target.bot.send_message(
-            _chat_id(target), text, reply_markup=kb, parse_mode=ParseMode.HTML)
-    else:
-        await answer(target, text, kb)
+    send_target = target.message if had_preview and isinstance(target, CallbackQuery) else target
+    await answer(send_target, text, kb, image, lang=_lang(target))
 
 
 async def render_home(target, state: FSMContext) -> None:
@@ -218,7 +215,7 @@ async def render_home(target, state: FSMContext) -> None:
     channels = poster.list_channels(uid)
     text = t("poster_home" if channels else "poster_home_empty", lang)
     await state.set_state(None)
-    await _exit_screen(target, state, text, _home_kb(channels, lang, admin_mode, _tz_label(_tz_of(target))))
+    await _exit_screen(target, state, text, _home_kb(channels, lang, admin_mode, _tz_label(_tz_of(target))), "poster")
 
 
 @router.callback_query(F.data == "pstr:home")
@@ -864,11 +861,11 @@ async def on_preview_publish_now(cb: CallbackQuery, state: FSMContext) -> None:
     uid = cb.from_user.id if cb.from_user else 0
     channels = poster.list_channels(uid)
     await state.set_state(None)
-    await cb.bot.send_message(
-        _chat_id(cb),
+    await answer(
+        cb.message,
         t("poster_home" if channels else "poster_home_empty", lang),
-        reply_markup=_home_kb(channels, lang, bool(data.get("poster_admin_mode")), _tz_label(_tz_of(cb))),
-        parse_mode=ParseMode.HTML,
+        _home_kb(channels, lang, bool(data.get("poster_admin_mode")), _tz_label(_tz_of(cb))),
+        "poster", lang=lang,
     )
     await ack(cb)
 
@@ -936,10 +933,12 @@ async def _finalize(target, state: FSMContext, run_at_utc: datetime) -> None:
     channels = poster.list_channels(uid)
     text = t("poster_home" if channels else "poster_home_empty", _lang(target))
     await state.set_state(None)
-    await target.bot.send_message(
-        _chat_id(target), text,
-        reply_markup=_home_kb(channels, _lang(target), bool(data.get("poster_admin_mode")), _tz_label(_tz_of(target))),
-        parse_mode=ParseMode.HTML)
+    send_target = target.message if isinstance(target, CallbackQuery) else target
+    await answer(
+        send_target, text,
+        _home_kb(channels, _lang(target), bool(data.get("poster_admin_mode")), _tz_label(_tz_of(target))),
+        "poster", lang=_lang(target),
+    )
 
 
 @router.callback_query(PosterFlow.composing_time, F.data.regexp(r"^pstr:time:\d+$"))

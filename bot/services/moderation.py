@@ -14,6 +14,7 @@ from aiogram.enums import ParseMode
 from bot.cache import get_admins, get_config
 from bot.formatting import code_html, quote_html, split_html, strip_blockquote_tags, telegram_html, user_mention
 from bot.helpers import blank_and_delete, link_preview_options
+from bot.icons import emoji_html
 from bot.keyboards import moderation_appeal_kb, moderation_delete_kb, moderation_vote_kb
 from bot import limits
 
@@ -217,7 +218,7 @@ def forum_text_with_votes(entry: dict | None) -> str:
             comment=strip_blockquote_tags(telegram_html(str(payload.get("appeal_comment") or "—"))),
         ))
     if isinstance(payload, dict) and payload.get("resubmitted_after_rework"):
-        parts.append("♻️ <b>Отправлено после доработки</b> (плагин уже был на модерации)")
+        parts.append(f"{emoji_html('updates')} <b>Отправлено после доработки</b> (плагин уже был на модерации)")
     if isinstance(entry, dict) and entry.get("type") == "delete":
         return "\n\n".join(parts)
     parts.append(vote_summary(entry))

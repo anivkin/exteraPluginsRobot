@@ -174,7 +174,7 @@ def categories_kb(categories: list, lang: str, selected=None) -> InlineKeyboardM
             label,
             callback_data=f"submit:cat:{cat.get('key')}",
             style="success" if cat.get("key") in selected else None,
-            icon=cat.get("emoji_id") or cat.get("key"),
+            icon=CATEGORY_ICONS.get(cat.get("key")) or cat.get("emoji_id") or cat.get("key"),
         ))
     
     rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
@@ -345,7 +345,7 @@ def draft_category_kb(prefix: str, categories: list, lang: str = "ru", selected=
                 label,
                 callback_data=f"{prefix}:cat:{cat.get('key')}",
                 style="success" if cat.get("key") in selected else None,
-                icon=cat.get("emoji_id") or cat.get("key"),
+                icon=CATEGORY_ICONS.get(cat.get("key")) or cat.get("emoji_id") or cat.get("key"),
             )
         )
 
@@ -390,7 +390,7 @@ def catalog_main_kb(categories: list, lang: str, source_label: str | None = None
         cat_buttons.append(_btn(
             text=label,
             callback_data=f"cat:{cat.get('key')}:0",
-            icon=cat.get("emoji_id") or cat.get("key"),
+            icon=CATEGORY_ICONS.get(cat.get("key")) or cat.get("emoji_id") or cat.get("key"),
         ))
     rows.extend([cat_buttons[i:i+2] for i in range(0, len(cat_buttons), 2)])
     
@@ -811,21 +811,24 @@ _AUDIT_FILTER_BUTTONS = (
 
 
 def admin_rejected_kb(
-    items: List[Tuple[str, str]],
+    items: List[Tuple[str, str] | Tuple[str, str, str]],
     page: int,
     total_pages: int,
     status: str = "all",
     lang: str = "ru",
 ) -> InlineKeyboardMarkup:
-    rows = [[_btn(label, callback_data=f"adm:rejreq:{request_callback_token(rid)}", icon="file")] for label, rid in items]
+    rows = [[_btn(item[0], callback_data=f"adm:rejreq:{request_callback_token(item[1])}",
+                  icon=item[2] if len(item) > 2 else "file")] for item in items]
 
     filters: List[InlineKeyboardButton] = []
+    filter_icons = {"all": "file", "published": "yes", "rejected": "no", "pending": "clock",
+                    "rework": "edit", "scheduled": "calendar"}
     for key, text_key in _AUDIT_FILTER_BUTTONS:
         label = t(text_key, lang)
         if key == status:
-            filters.append(_btn(f"· {label} ·", callback_data=f"adm:audit:{key}:0", style="success"))
+            filters.append(_btn(f"· {label} ·", callback_data=f"adm:audit:{key}:0", style="success", icon=filter_icons[key]))
         else:
-            filters.append(_btn(label, callback_data=f"adm:audit:{key}:0"))
+            filters.append(_btn(label, callback_data=f"adm:audit:{key}:0", icon=filter_icons[key]))
     for i in range(0, len(filters), 3):
         rows.append(filters[i:i + 3])
 
@@ -1013,11 +1016,8 @@ def admin_queue_kb(
     for item in items:
         label = item[0]
         rid = item[1]
-        icon = item[2] if len(item) > 2 else None
-        if icon:
-            rows.append([_btn(label, callback_data=f"adm:review:{request_callback_token(rid)}", icon=icon)])
-        else:
-            rows.append([InlineKeyboardButton(text=label, callback_data=f"adm:review:{request_callback_token(rid)}")])
+        icon = (item[2] if len(item) > 2 else None) or "plugin"
+        rows.append([_btn(label, callback_data=f"adm:review:{request_callback_token(rid)}", icon=icon)])
     
     nav = []
     if page > 0:
@@ -1066,8 +1066,9 @@ def admin_banned_kb(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def admin_rejected_appeals_kb(items: List[Tuple[str, str]], page: int, total_pages: int, lang: str = "ru") -> InlineKeyboardMarkup:
-    rows = [[_btn(label, callback_data=f"adm:appd:{request_callback_token(rid)}", icon="profile")] for label, rid in items]
+def admin_rejected_appeals_kb(items: List[Tuple[str, str] | Tuple[str, str, str]], page: int, total_pages: int, lang: str = "ru") -> InlineKeyboardMarkup:
+    rows = [[_btn(item[0], callback_data=f"adm:appd:{request_callback_token(item[1])}",
+                  icon=item[2] if len(item) > 2 else "profile")] for item in items]
     nav = []
     if page > 0:
         nav.append(_btn("<", callback_data=f"adm:rejapp:{page-1}", icon="back"))
@@ -1275,12 +1276,13 @@ def admin_reject_templates_kb(
     _, indices, page, total = template_page(templates, page)
     for idx in indices:
         if idx in selected:
-            label = f"{idx + 1} ✓ [{selected.index(idx) + 1}]"
+            label = f"{idx + 1} [{selected.index(idx) + 1}]"
             style = "success"
         else:
             label = str(idx + 1)
             style = None
-        buttons.append(_btn(label, callback_data=f"adm:rejtpl_t:{request_callback_token(request_id)}:{idx}", style=style))
+        buttons.append(_btn(label, callback_data=f"adm:rejtpl_t:{request_callback_token(request_id)}:{idx}",
+                            style=style, icon="yes" if idx in selected else None))
     width = max(1, (len(buttons) + 1) // 2)
     rows = [buttons[index:index + width] for index in range(0, len(buttons), width)]
     navigation = []

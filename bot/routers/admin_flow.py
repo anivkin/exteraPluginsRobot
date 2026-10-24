@@ -906,7 +906,7 @@ def _post_section_text(lang: str) -> str:
 async def _render_config(cb: CallbackQuery, state: FSMContext) -> None:
     lang = _lang_for(cb)
     await state.set_state(AdminFlow.menu)
-    await answer(cb, _tr(cb, "admin_settings_title"), admin_config_kb(lang=lang, role=_admin_menu_role(cb)), "admin")
+    await answer(cb, _tr(cb, "admin_settings_title"), admin_config_kb(lang=lang, role=_admin_menu_role(cb)), "settings")
 
 
 _CONFIG_FIELD_LABEL_KEYS: dict[str, str] = {
@@ -1324,20 +1324,18 @@ async def _render_queue(cb: CallbackQuery, state: FSMContext, token: str) -> Non
         request_type = entry.get("type")
         if request_type == "delete":
             name = payload.get("delete_slug") or name
-            prefix = "Удаление "
+            prefix = t("request_kind_delete", lang) + ": "
             row_icon = "delete"
         elif request_type == "update":
-            prefix = "Обновление: "
+            prefix = t("request_kind_update", lang) + ": "
             row_icon = "updates"
         else:
             prefix = ""
             row_icon = None
         if request_type != "delete":
             my = _my_vote(entry, viewer_id)
-            if my == "yes":
-                prefix = "✅ " + prefix
-            elif my == "no":
-                prefix = "❌ " + prefix
+            if my in {"yes", "no"}:
+                row_icon = my
         if entry.get("status") == "error" or payload.get("last_publish_error"):
             prefix = f"Ошибка: {prefix}"
             row_icon = row_icon or "warning"
@@ -1355,7 +1353,7 @@ async def _render_queue(cb: CallbackQuery, state: FSMContext, token: str) -> Non
         title = _tr(cb, "admin_queue_title_all")
     caption = f"<b>{title}</b>\n{_tr(cb, 'admin_page', current=page + 1, total=total_pages)}"
     await state.set_state(AdminFlow.menu)
-    msg = await answer(cb, caption, admin_queue_kb(items, page, total_pages, queue_type, lang=lang), "admin")
+    msg = await answer(cb, caption, admin_queue_kb(items, page, total_pages, queue_type, lang=lang), "moderation")
     if msg:
         pass
 
@@ -2002,9 +2000,9 @@ def _build_health_text() -> str:
 
     lines = [
         "<b>Health</b>",
-        f"Admin SQLite: <code>{plain_html(ADMIN_SQLITE_PATH)}</code> {'✅' if ADMIN_SQLITE_PATH.exists() else '❌'}",
-        f"Catalog SQLite: <code>{plain_html(CATALOG_SQLITE_PATH)}</code> {'✅' if CATALOG_SQLITE_PATH.exists() else '❌'}",
-        f"Data dir: <code>{plain_html(DATA_DIR)}</code> {'✅' if DATA_DIR.exists() else '❌'}",
+        f"Admin SQLite: <code>{plain_html(ADMIN_SQLITE_PATH)}</code> {emoji_html('yes' if ADMIN_SQLITE_PATH.exists() else 'no')}",
+        f"Catalog SQLite: <code>{plain_html(CATALOG_SQLITE_PATH)}</code> {emoji_html('yes' if CATALOG_SQLITE_PATH.exists() else 'no')}",
+        f"Data dir: <code>{plain_html(DATA_DIR)}</code> {emoji_html('yes' if DATA_DIR.exists() else 'no')}",
         f"Plugins in catalog: <code>{plugins_count}</code>",
         f"Requests pending/error/scheduled: <code>{counts['pending']}/{counts['error']}/{counts['scheduled']}</code>",
         f"Requests published/rejected: <code>{counts['published']}/{counts['rejected']}</code>",
@@ -2981,14 +2979,14 @@ _REJECTED_PER_PAGE = 8
 _AUDIT_FILTERS = ("all", "published", "rejected", "pending", "rework", "scheduled")
 
 _STATUS_ICONS = {
-    "published": "✅",
-    "rejected": "❌",
-    "pending": "⏳",
-    "rework": "✏️",
-    "scheduled": "🕓",
-    "draft": "📝",
-    "deleted": "🗑",
-    "error": "⚠️",
+    "published": "yes",
+    "rejected": "no",
+    "pending": "clock",
+    "rework": "edit",
+    "scheduled": "calendar",
+    "draft": "file",
+    "deleted": "delete",
+    "error": "warning",
 }
 
 
@@ -3000,14 +2998,12 @@ def _audit_requests(status: str = "all") -> list[dict]:
     return reqs
 
 
-def _request_label(entry: dict, with_status: bool = False) -> str:
+def _request_label(entry: dict, lang: str = "ru") -> str:
     payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
     item = payload.get("plugin") or payload.get("icon") or {}
     name = item.get("name") or payload.get("delete_slug") or entry.get("id") or "—"
     typ = entry.get("type")
-    prefix = "🔄 " if typ == "update" else "🗑 " if typ == "delete" else ""
-    if with_status:
-        prefix = f"{_STATUS_ICONS.get(str(entry.get('status')), '•')} {prefix}"
+    prefix = f"{t(f'request_kind_{typ}', lang)}: " if typ in {"update", "delete"} else ""
     return f"{prefix}{name}"[:48]
 
 
@@ -3036,7 +3032,7 @@ async def _render_rejected(
     total_pages = max(1, math.ceil(total / _REJECTED_PER_PAGE))
     page = max(0, min(page, total_pages - 1))
     page_items = reqs[page * _REJECTED_PER_PAGE:(page + 1) * _REJECTED_PER_PAGE]
-    items = [(_request_label(r, with_status=True), str(r.get("id"))) for r in page_items]
+    items = [(_request_label(r, lang), str(r.get("id")), _STATUS_ICONS.get(str(r.get("status")), "file")) for r in page_items]
     filter_label = _tr(target, f"admin_audit_filter_{status}")
     if reqs:
         header = _tr(
@@ -3112,8 +3108,7 @@ def _rejected_appeals() -> list[dict]:
 def _appeal_label(entry: dict) -> str:
     payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
     name = payload.get("username") or payload.get("user_id") or entry.get("id") or "—"
-    prefix = "🚫 " if _reject_comment(entry).endswith("окончательный") else "🔒 "
-    return f"{prefix}@{name}" if payload.get("username") else f"{prefix}{name}"
+    return f"@{name}" if payload.get("username") else str(name)
 
 
 async def _render_rejected_appeals(target: CallbackQuery | Message, state: FSMContext, page: int) -> None:
@@ -3123,7 +3118,7 @@ async def _render_rejected_appeals(target: CallbackQuery | Message, state: FSMCo
     total_pages = max(1, math.ceil(total / _REJECTED_PER_PAGE))
     page = max(0, min(page, total_pages - 1))
     page_items = reqs[page * _REJECTED_PER_PAGE:(page + 1) * _REJECTED_PER_PAGE]
-    items = [(_appeal_label(r), str(r.get("id"))) for r in page_items]
+    items = [(_appeal_label(r), str(r.get("id")), "ban" if _reject_comment(r).endswith("окончательный") else "lock") for r in page_items]
     if reqs:
         header = _tr(target, "admin_rejected_appeals_title", current=page + 1, total=total_pages, count=total)
     else:
@@ -4749,19 +4744,17 @@ async def on_admin_queue(cb: CallbackQuery, state: FSMContext) -> None:
         request_type = entry.get("type")
         if request_type == "delete":
             name = payload.get("delete_slug") or name
-            prefix = "Удаление "
+            prefix = t("request_kind_delete", lang) + ": "
             row_icon = "delete"
         elif request_type == "update":
-            prefix = "Обновление: "
+            prefix = t("request_kind_update", lang) + ": "
             row_icon = "updates"
         else:
             prefix = ""
         if request_type != "delete":
             my = _my_vote(entry, viewer_id)
-            if my == "yes":
-                prefix = "✅ " + prefix
-            elif my == "no":
-                prefix = "❌ " + prefix
+            if my in {"yes", "no"}:
+                row_icon = my
         if entry.get("status") == "error" or payload.get("last_publish_error"):
             prefix = f"Ошибка: {prefix}"
             row_icon = row_icon or "warning"
@@ -4778,7 +4771,7 @@ async def on_admin_queue(cb: CallbackQuery, state: FSMContext) -> None:
     else:
         title = _tr(cb, "admin_queue_title_all")
     caption = f"<b>{title}</b>\n{_tr(cb, 'admin_page', current=page + 1, total=total_pages)}"
-    await answer(cb, caption, admin_queue_kb(items, page, total_pages, queue_type, lang=lang), "admin")
+    await answer(cb, caption, admin_queue_kb(items, page, total_pages, queue_type, lang=lang), "moderation")
     await ack(cb)
 
 
@@ -7603,20 +7596,20 @@ async def on_admin_appeal_decision(cb: CallbackQuery, state: FSMContext) -> None
 _AUDIT_LOG_PER_PAGE = 10
 
 _AUDIT_LABELS = {
-    "moderation.vote": "🗳 Голос",
-    "moderation.vote_reason": "🗳 Причина голоса",
-    "moderation.reject": "❌ Отклонено",
-    "moderation.rework": "✏️ На доработку",
-    "moderation.publish_success": "✅ Опубликовано",
-    "moderation.request_deleted": "🗑 Заявка удалена",
-    "moderation.plugin_blocked": "🚫 Плагин заблокирован",
-    "moderation.plugin_unblocked": "♻️ Плагин разблокирован",
-    "moderation.appeal_submitted": "♻️ Подана апелляция",
-    "moderation.appeal_approved": "✅ Апелляция одобрена",
-    "moderation.appeal_denied": "❌ Апелляция отклонена",
-    "moderation.appeal_banned_final": "🚫 Апелляция отклонена, бан",
-    "moderation.author_question": "💬 Вопрос автора",
-    "moderation.message_author": "💬 Сообщение автору",
+    "moderation.vote": f"{emoji_html('vote')} Голос",
+    "moderation.vote_reason": f"{emoji_html('vote')} Причина голоса",
+    "moderation.reject": f"{emoji_html('no')} Отклонено",
+    "moderation.rework": f"{emoji_html('edit')} На доработку",
+    "moderation.publish_success": f"{emoji_html('yes')} Опубликовано",
+    "moderation.request_deleted": f"{emoji_html('delete')} Заявка удалена",
+    "moderation.plugin_blocked": f"{emoji_html('ban')} Плагин заблокирован",
+    "moderation.plugin_unblocked": f"{emoji_html('updates')} Плагин разблокирован",
+    "moderation.appeal_submitted": f"{emoji_html('updates')} Подана апелляция",
+    "moderation.appeal_approved": f"{emoji_html('yes')} Апелляция одобрена",
+    "moderation.appeal_denied": f"{emoji_html('no')} Апелляция отклонена",
+    "moderation.appeal_banned_final": f"{emoji_html('ban')} Апелляция отклонена, бан",
+    "moderation.author_question": f"{emoji_html('support')} Вопрос автора",
+    "moderation.message_author": f"{emoji_html('support')} Сообщение автору",
 }
 
 
@@ -7752,7 +7745,7 @@ async def _render_quiz_item(target, state: FSMContext, question_id: str) -> None
     edit_lang = _quiz_edit_lang(await state.get_data())
     text, options = _quiz_block(question, edit_lang)
     rendered = "\n".join(
-        f"{'✅' if idx == 0 else '▫️'} {plain_html(option)}" for idx, option in enumerate(options)
+        f"{emoji_html('yes') if idx == 0 else '•'} {plain_html(option)}" for idx, option in enumerate(options)
     )
     body = _tr(
         target, "admin_quiz_view",

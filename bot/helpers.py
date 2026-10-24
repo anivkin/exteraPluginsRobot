@@ -1,6 +1,9 @@
 import asyncio
+import hashlib
+import html
 import logging
 import re
+from functools import lru_cache
 from pathlib import Path
 from uuid import uuid4
 from typing import Dict, Optional
@@ -20,7 +23,7 @@ from aiogram.types import (
 from bot import limits
 from bot.cache import get_config
 from bot.context import get_lang
-from bot.formatting import split_html, telegram_html
+from bot.formatting import split_html, telegram_html, visible_html_length
 from bot.texts import t
 from core.storage import DATA_DIR
 
@@ -31,12 +34,18 @@ _image_file_ids: Dict[str, str] = {}
 logger = logging.getLogger(__name__)
 
 _LINK_PREVIEW_IMAGE_URLS = {
-    "admin": "https://github.com/itsv1eds/exteraPluginsRobot/blob/main/img/admin.png?raw=true",
-    "new": "https://github.com/itsv1eds/exteraPluginsRobot/blob/main/img/new.png?raw=true",
-    "update": "https://github.com/itsv1eds/exteraPluginsRobot/blob/main/img/update.png?raw=true",
-    "appeal": "https://github.com/itsv1eds/exteraPluginsRobot/blob/main/img/appeal.png?raw=true",
-    "delete": "https://github.com/itsv1eds/exteraPluginsRobot/blob/main/img/delete.png?raw=true",
+    key: f"https://raw.githubusercontent.com/itsv1eds/exteraPluginsRobot/main/img/{key}.jpg"
+    for key in ("admin", "new", "update", "appeal", "delete")
 }
+
+
+def image_path(image: Optional[str]) -> Optional[Path]:
+    if image:
+        for extension in (".jpg", ".png"):
+            path = IMAGES_DIR / f"{image}{extension}"
+            if path.is_file():
+                return path
+    return None
 
 
 def _remember_image(image: str, message):
@@ -133,11 +142,21 @@ def _is_transient_network_error(exc: Exception) -> bool:
     return isinstance(exc, (TelegramNetworkError, TelegramServerError, TelegramRetryAfter))
 
 
+@lru_cache(maxsize=64)
 def _link_preview_url(image: Optional[str]) -> Optional[str]:
     if not image:
         return None
     key = image.removesuffix("_ru")
-    return _LINK_PREVIEW_IMAGE_URLS.get(key)
+    url = _LINK_PREVIEW_IMAGE_URLS.get(key)
+    if not url:
+        return None
+    path = image_path(image)
+    filename = path.name if path else f"{image}.jpg"
+    preview_url = f"{url.rsplit('/', 1)[0]}/{filename}"
+    if path:
+        version = hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+        preview_url += f"?v={version}"
+    return preview_url
 
 
 def link_preview_options(image: Optional[str] = None, url: Optional[str] = None) -> Optional[LinkPreviewOptions]:
@@ -150,6 +169,11 @@ def link_preview_options(image: Optional[str] = None, url: Optional[str] = None)
         prefer_large_media=True,
         show_above_text=True,
     )
+
+
+def with_hidden_preview_link(text: str, url: str) -> str:
+    prefix = f'<a href="{html.escape(url, quote=True)}">&#8203;</a>'
+    return text if text.startswith(prefix) else prefix + text
 
 
 def _topic_kwargs(target: Message | None) -> dict[str, int]:
@@ -237,18 +261,23 @@ BLANK_SETTLE_DELAY = 1.5
 async def send_in_parts(bot, chat_id: int, text: str, kb=None, *,
                         disable_web_page_preview: bool = True,
                         link_preview_options=None, **kwargs):
-    parts = split_html(text, limits.MESSAGE_TEXT)
+    preview_url = getattr(link_preview_options, "url", None)
+    if preview_url:
+        text = text.removeprefix(with_hidden_preview_link("", preview_url))
+    parts = split_html(text, limits.MESSAGE_TEXT - bool(preview_url))
     if not parts:
         return None
     sent = None
     for index, part in enumerate(parts):
         last = index == len(parts) - 1
+        if last and preview_url:
+            part = with_hidden_preview_link(part, preview_url)
         sent = await bot.send_message(
             chat_id,
             text=part,
             parse_mode=ParseMode.HTML,
             reply_markup=kb if last else None,
-            disable_web_page_preview=disable_web_page_preview,
+            disable_web_page_preview=disable_web_page_preview if last else True,
             link_preview_options=link_preview_options if last else None,
             **kwargs,
         )
@@ -348,30 +377,24 @@ async def answer(
     text: str,
     kb: Optional[InlineKeyboardMarkup] = None,
     image: Optional[str] = None,
+    *,
+    lang: Optional[str] = None,
 ) -> Optional[Message]:
-    text_length = len(strip_html(text or ""))
     if image:
         try:
             user = (target.from_user if isinstance(target, Message) else (target.from_user or (target.message.from_user if target.message else None)))
-            lang = get_lang(getattr(user, "id", None))
-            if lang == "ru":
+            lang = lang or get_lang(getattr(user, "id", None))
+            if lang == "ru" and not image.endswith("_ru"):
                 ru_key = f"{image}_ru"
-                ru_path = IMAGES_DIR / f"{ru_key}.png"
-                if ru_path.exists():
+                if image_path(ru_key) or _link_preview_url(ru_key):
                     image = ru_key
         except Exception:
             pass
     preview_options = link_preview_options(image)
     if preview_options:
-        keep_photo = (
-            isinstance(target, CallbackQuery) and bool(getattr(target.message, "photo", None))
-            and text_length <= limits.CAPTION
-            and (image in _image_file_ids or (IMAGES_DIR / f"{image}.png").exists())
-        )
-        if keep_photo:
-            preview_options = None
-        else:
-            image = None
+        text = with_hidden_preview_link(text, preview_options.url)
+        image = None
+    text_length = visible_html_length(text)
     disable_web_page_preview = not bool(preview_options)
 
     if image and text_length > limits.CAPTION:
@@ -410,8 +433,8 @@ async def answer(
 
             if image and not msg.photo:
                 file_id = _image_file_ids.get(image)
-                path = IMAGES_DIR / f"{image}.png"
-                if file_id or path.exists():
+                path = image_path(image)
+                if file_id or path is not None:
                     sent = await msg.edit_media(
                         InputMediaPhoto(media=file_id or FSInputFile(path), caption=text, parse_mode=ParseMode.HTML),
                         reply_markup=kb,
@@ -435,8 +458,8 @@ async def answer(
                     )
                     return _remember_image(image, edited)
 
-                path = IMAGES_DIR / f"{image}.png"
-                if path.exists():
+                path = image_path(image)
+                if path is not None:
                     edited = await msg.edit_media(
                         InputMediaPhoto(
                             media=FSInputFile(path),
@@ -492,7 +515,7 @@ async def answer(
                 )
                 try:
                     file_id = _image_file_ids.get(image or "")
-                    path = IMAGES_DIR / f"{image}.png" if image else None
+                    path = image_path(image)
                     if image and file_id:
                         return await bot.send_photo(
                             chat_id, file_id, caption=text, parse_mode=ParseMode.HTML,
@@ -579,6 +602,12 @@ async def answer(
         thread_kwargs = _topic_kwargs(target)
 
     async def _message_send(send_text: str) -> Optional[Message]:
+        if visible_html_length(send_text) > limits.MESSAGE_TEXT:
+            return await send_in_parts(
+                bot, chat_id, send_text, kb,
+                disable_web_page_preview=disable_web_page_preview,
+                link_preview_options=preview_options, **thread_kwargs,
+            )
         if image:
             file_id = _image_file_ids.get(image)
             if file_id:
@@ -590,8 +619,8 @@ async def answer(
                     reply_markup=kb,
                     **thread_kwargs,
                 )
-            path = IMAGES_DIR / f"{image}.png"
-            if path.exists():
+            path = image_path(image)
+            if path is not None:
                 msg = await bot.send_photo(
                     chat_id,
                     photo=FSInputFile(path),
