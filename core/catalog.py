@@ -4,6 +4,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from core.storage import load_icons, load_plugins
+from core.categories import categories_for, normalize_categories
 
 CatalogEntry = Dict[str, Any]
 
@@ -66,6 +67,8 @@ def _load_plugins() -> List[CatalogEntry]:
     _slug_index.clear()
     _official_plugin_id_index.clear()
     for plugin in _plugins_cache:
+        plugin["categories"] = categories_for(plugin)
+        plugin["category"] = (plugin["categories"] or [None])[0]
         slug = _normalize_slug(plugin.get("slug"))
         if slug:
             _slug_index[slug] = plugin
@@ -229,7 +232,8 @@ def list_plugins_by_category(category_key: str, source_filter: str = SOURCE_ALL)
     entries = _filter_plugins_by_source(_get_published_plugins(), source_filter)
     if category_key in (None, "", "_all"):
         return entries
-    return [p for p in entries if p.get("category") == category_key]
+    selected = normalize_categories(category_key)
+    return [p for p in entries if any(key in categories_for(p) for key in selected)]
 
 
 def search_plugins(query: str, limit: int = 10, source_filter: str = SOURCE_ALL) -> List[CatalogEntry]:
@@ -251,7 +255,7 @@ def search_plugins(query: str, limit: int = 10, source_filter: str = SOURCE_ALL)
                 locale_data.get("usage"),
             ])
         haystack_parts.append(plugin.get("slug"))
-        haystack_parts.append(plugin.get("category"))
+        haystack_parts.extend(categories_for(plugin))
         source = plugin.get("source")
         if isinstance(source, dict):
             haystack_parts.extend([

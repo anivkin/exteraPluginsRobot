@@ -21,7 +21,16 @@ def localized_value(values, language, default=None):
 
 
 def category_label(category, language):
-    from bot.texts import TEXTS, t
+    from bot.texts import t
+    from core.categories import categories_for
 
-    key = f"category_{category.get('key')}_label_btn"
-    return category.get(language) or (t(key, language) if key in TEXTS else localized_value(category, language, category.get("key")))
+    keys = categories_for(category.get("key"))
+    if keys:
+        return t(f"category_{keys[0]}_label_btn", language)
+    return localized_value(category, language, category.get("key"))
+
+
+def category_labels(value, language):
+    from core.categories import categories_for
+
+    return ", ".join(category_label({"key": key}, language) for key in categories_for(value))

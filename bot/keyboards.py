@@ -1,6 +1,7 @@
 from typing import List, Optional, Tuple
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from core.categories import categories_for
 
 from bot.callback_tokens import encode_slug
 from bot.icons import CATEGORY_ICONS, ICONS
@@ -163,17 +164,21 @@ def admin_scheduled_item_kb(request_id: str, lang: str = "ru") -> InlineKeyboard
     ])
 
 
-def categories_kb(categories: list, lang: str) -> InlineKeyboardMarkup:
+def categories_kb(categories: list, lang: str, selected=None) -> InlineKeyboardMarkup:
+    selected = categories_for(selected)
     buttons = []
     for cat in categories:
         label = category_label(cat, lang)
         buttons.append(_btn(
             label,
             callback_data=f"submit:cat:{cat.get('key')}",
+            style="success" if cat.get("key") in selected else None,
             icon=cat.get("emoji_id") or cat.get("key"),
         ))
     
     rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
+    rows.append([_btn(t("btn_categories_done", lang), callback_data="submit:cat:done", icon="yes")])
+    rows.append([_btn(t("btn_back", lang), callback_data="submit:cat:back", style="danger", icon="back")])
     rows.append([_btn(t("btn_cancel", lang), callback_data="cancel", icon="cancel")])
     
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -329,7 +334,8 @@ def description_lang_kb() -> InlineKeyboardMarkup:
     ])
 
 
-def draft_category_kb(prefix: str, categories: list, lang: str = "ru") -> InlineKeyboardMarkup:
+def draft_category_kb(prefix: str, categories: list, lang: str = "ru", selected=None) -> InlineKeyboardMarkup:
+    selected = categories_for(selected)
     buttons = []
     for cat in categories:
         label = category_label(cat, lang)
@@ -337,13 +343,16 @@ def draft_category_kb(prefix: str, categories: list, lang: str = "ru") -> Inline
             _btn(
                 label,
                 callback_data=f"{prefix}:cat:{cat.get('key')}",
+                style="success" if cat.get("key") in selected else None,
                 icon=cat.get("emoji_id") or cat.get("key"),
             )
         )
 
     rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
-    back_cb = "adm:cancel" if prefix.startswith("adm") else f"{prefix}:back"
-    rows.append([_btn(t("btn_back", lang), callback_data=back_cb, style="danger", icon="back")])
+    rows.append([_btn(t("btn_categories_done", lang), callback_data=f"{prefix}:cat:done", icon="yes")])
+    rows.append([_btn(t("btn_back", lang), callback_data=f"{prefix}:back", style="danger", icon="back")])
+    cancel_cb = "adm:cancel" if prefix.startswith("adm") else "cancel"
+    rows.append([_btn(t("btn_cancel", lang), callback_data=cancel_cb, icon="cancel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

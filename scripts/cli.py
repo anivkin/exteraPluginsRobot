@@ -10,6 +10,7 @@ def cmd_preview(args: argparse.Namespace) -> None:
     print(f"File: {Path(args.plugin).name}")
     print("ID:", metadata.id)
     print("Version:", metadata.version)
+    print("Categories:", ", ".join(metadata.categories) or "not specified")
     print("Has settings:", "✅" if metadata.has_ui_settings else "❌")
 
     template = metadata.as_post_template()

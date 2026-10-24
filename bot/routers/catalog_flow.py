@@ -26,7 +26,8 @@ from bot.routers import joinly_flow
 from bot.cache import get_admins_super, get_categories, get_icons
 from bot.constants import PAGE_SIZE
 from bot.context import get_language, get_lang
-from bot.languages import localized_value
+from bot.languages import category_labels, localized_value
+from core.categories import categories_for
 from bot.callback_tokens import decode_slug, encode_slug
 from bot.formatting import quote_html
 from bot.helpers import ack, answer, link_preview_options, strip_html
@@ -90,8 +91,7 @@ def _github_img_url(image_key: str) -> str:
 
 
 def _plugin_category_preview_url(category_key: str) -> str:
-    known = {str(category.get("key")) for category in get_categories()}
-    image_key = f"cat_{category_key}" if category_key in known else "cat_all"
+    image_key = "cat_fun" if category_key == "fun" else "cat_all"
     return _github_img_url(image_key)
 
 
@@ -322,6 +322,8 @@ def build_plugin_preview(entry: Dict[str, Any], lang: str) -> str:
     name = html.escape(str(name_value))
     author_safe = html.escape(str(author)).replace("\\n","\n")
     lines = [f"<b>{name}</b> by {author_safe}"]
+    if categories_for(entry):
+        lines.append(f"<b>{t('catalog_field_categories', lang)}:</b> {html.escape(category_labels(entry, lang))}")
 
     description = (locale.get("description") or "").strip()
     if description:
@@ -368,10 +370,12 @@ def build_inline_preview(entry: Dict[str, Any], lang: str, kind: str = "plugin")
         if isinstance(icons, (list, dict)):
             count = len(icons)
     if kind == "plugin":
-        category = str(entry.get("category") or "").strip()
+        category = (categories_for(entry) or [""])[0]
         icon_id = CATEGORY_ICONS.get(category) or ICONS["plugin"]
         fallback = CATEGORY_FALLBACKS.get(category, "🧩")
         lines = [f'<tg-emoji emoji-id="{icon_id}">{fallback}</tg-emoji> <b>{name}</b> by <code>{author}</code>']
+        if categories_for(entry):
+            lines.append(f"<b>{t('catalog_field_categories', lang)}:</b> {html.escape(category_labels(entry, lang))}")
     else:
         lines = [t("catalog_inline_header", lang, name=name, author=author)]
     if count is not None:
@@ -588,6 +592,12 @@ async def on_catalog_category(cb: CallbackQuery, state: FSMContext) -> None:
     cat_key = parts[1]
     page = int(parts[2]) if len(parts) > 2 else 0
     lang = await get_language(cb, state)
+    if cat_key != "_all":
+        keys = categories_for(cat_key)
+        if not keys:
+            await cb.answer(t("not_found", lang), show_alert=True)
+            return
+        cat_key = keys[0]
     source_filter = await _catalog_source_filter(state)
     source_label = _source_label_for_filter(source_filter, lang)
 
@@ -602,6 +612,7 @@ async def on_catalog_category(cb: CallbackQuery, state: FSMContext) -> None:
         return
 
     total_pages = math.ceil(total / PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
     start = page * PAGE_SIZE
     page_items = plugins[start : start + PAGE_SIZE]
 
@@ -1579,7 +1590,7 @@ async def on_inline(query: InlineQuery) -> None:
 
         locale = localized_value(plugin, lang, {})
         name = locale.get("name") or slug
-        category_key = str(plugin.get("category") or "").strip()
+        category_key = (categories_for(plugin) or [""])[0]
         category_fallback = CATEGORY_FALLBACKS.get(category_key, "")
         title = f"{category_fallback} {name}"
         preview_url = _plugin_category_preview_url(category_key)

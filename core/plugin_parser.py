@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from core.categories import normalize_categories
+
 MANDATORY_FIELDS = {
     "id": "__id__",
     "name": "__name__",
@@ -21,6 +23,7 @@ OPTIONAL_FIELDS = {
     "elyx_version": "__elyx_version__",
     "requirements": "__requirements__",
     "requires": "__requires__",
+    "category": "__category__",
 }
 
 _VERSION_RE = re.compile(r"\d+(?:\.\d+)*")
@@ -51,6 +54,7 @@ class PluginMetadata:
     raw_text: str
     app_version: str = ""
     optional: Dict[str, Any] = field(default_factory=dict)
+    categories: list[str] = field(default_factory=list)
 
     def as_post_template(self) -> Dict[str, Optional[str]]:
 
@@ -107,7 +111,12 @@ def parse_plugin_text(text: str, fallback_version: str | None = None) -> PluginM
                 value = ast.literal_eval(node.value)
             except (ValueError, TypeError, RecursionError) as exc:
                 raise PluginParseError(f"Metadata {target.id} must be a literal") from exc
-            if key == "requires":
+            if key == "category":
+                try:
+                    value = normalize_categories(value, strict=True)
+                except ValueError as exc:
+                    raise PluginParseError(str(exc)) from exc
+            elif key == "requires":
                 if not isinstance(value, dict):
                     raise PluginParseError("__requires__ must be an object")
             elif key == "requirements":
@@ -147,6 +156,7 @@ def parse_plugin_text(text: str, fallback_version: str | None = None) -> PluginM
         raw_text=text,
         app_version=app_version,
         optional={key: fields.get(key) for key in OPTIONAL_FIELDS},
+        categories=fields.get("category") or [],
     )
 
     return metadata

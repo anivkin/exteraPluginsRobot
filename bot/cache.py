@@ -3,7 +3,9 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 from core.storage import load_config, load_icons, load_plugins
+from core.categories import CATEGORY_KEYS
 from bot.icons import CATEGORY_ICONS
+from bot.languages import SUPPORTED_LANGUAGES
 from bot.texts import t
 
 _cache: Dict[str, Any] = {}
@@ -58,23 +60,14 @@ def get_icons() -> List[Dict[str, Any]]:
 
 
 def get_categories() -> List[Dict[str, Any]]:
-    keys = [
-        ("informational", CATEGORY_ICONS["informational"]),
-        ("utilities", CATEGORY_ICONS["utilities"]),
-        ("customization", CATEGORY_ICONS["customization"]),
-        ("fun", CATEGORY_ICONS["fun"]),
-        ("library", CATEGORY_ICONS["library"]),
-    ]
     categories: List[Dict[str, Any]] = []
-    for key, emoji_id in keys:
+    for key in CATEGORY_KEYS:
         categories.append(
             {
                 "key": key,
-                "ru": t(f"category_{key}_label_btn", "ru"),
-                "en": t(f"category_{key}_label_btn", "en"),
-                "tag_ru": t(f"category_{key}_tag", "ru"),
-                "tag_en": t(f"category_{key}_tag", "en"),
-                "emoji_id": emoji_id,
+                **{lang: t(f"category_{key}_label_btn", lang) for lang in SUPPORTED_LANGUAGES},
+                **{f"tag_{lang}": t(f"category_{key}_tag", lang) for lang in SUPPORTED_LANGUAGES},
+                "emoji_id": CATEGORY_ICONS[key],
             }
         )
     return categories

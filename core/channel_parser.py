@@ -3,17 +3,33 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from core.categories import categories_for
+
 HASHTAG_TO_CATEGORY = {
-    "#информационные": "informational",
-    "#informational": "informational",
-    "#утилиты": "utilities",
-    "#utilities": "utilities",
-    "#кастомизация": "customization",
-    "#customization": "customization",
+    "#информационные": "tools",
+    "#informational": "tools",
+    "#утилиты": "tools",
+    "#utilities": "tools",
+    "#кастомизация": "appearance",
+    "#customization": "appearance",
     "#развлечения": "fun",
     "#fun": "fun",
-    "#библиотека": "library",
-    "#library": "library",
+    "#библиотека": "libraries",
+    "#library": "libraries",
+    "#оформление": "appearance",
+    "#appearance": "appearance",
+    "#чаты": "chats",
+    "#chats": "chats",
+    "#медиа": "media",
+    "#media": "media",
+    "#приватность": "privacy",
+    "#privacy": "privacy",
+    "#инструменты": "tools",
+    "#tools": "tools",
+    "#интеграции": "integrations",
+    "#integrations": "integrations",
+    "#библиотеки": "libraries",
+    "#libraries": "libraries",
 }
 
 FIELD_MAPPING_RU = {
@@ -51,6 +67,7 @@ class ParsedPost:
     ru: Dict[str, str] = field(default_factory=dict)
     en: Dict[str, str] = field(default_factory=dict)
     category: Optional[str] = None
+    categories: List[str] = field(default_factory=list)
     hashtags: List[str] = field(default_factory=list)
     is_plugin: bool = True
     raw_text: str = ""
@@ -87,7 +104,8 @@ class ParsedPost:
         return {
             "slug": slug,
             "status": "published",
-            "category": self.category,
+            "category": (categories_for(self.categories or self.category) or [None])[0],
+            "categories": categories_for(self.categories or self.category),
             "authors": {
                 "ru": self.ru.get("author") or self.ru.get("author_channel"),
                 "en": self.en.get("author") or self.en.get("author_channel"),
@@ -151,10 +169,8 @@ def parse_channel_post(
     hashtags = re.findall(r"#[\w@]+", text.lower())
     result.hashtags = hashtags
     
-    for tag in hashtags:
-        if tag.lower() in HASHTAG_TO_CATEGORY:
-            result.category = HASHTAG_TO_CATEGORY[tag.lower()]
-            break
+    result.categories = categories_for([HASHTAG_TO_CATEGORY[tag] for tag in hashtags if tag in HASHTAG_TO_CATEGORY])
+    result.category = result.categories[0] if result.categories else None
     
     source = html_text if html_text else text
     

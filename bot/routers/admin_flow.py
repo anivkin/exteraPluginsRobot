@@ -8,7 +8,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from bot.services.plugin_files import plugin_document
+from bot.services.plugin_files import send_plugin_document
+from core.plugin_formats import payload_extension
 from bot.services import reason_templates
 from bot.languages import normalize_language, localized_value
 from bot.services.reason_templates import (
@@ -127,7 +128,8 @@ from bot.services.moderation import (
     vote_counts,
     vote_summary,
 )
-from bot.services.submission import process_plugin_file
+from bot.services.submission import prepare_catalog_categories, process_plugin_file
+from core.categories import CATEGORY_KEYS, MAX_CATEGORIES, categories_for, category_fields
 from bot.states import AdminFlow
 from bot.icons import emoji_html
 from bot.texts import TEXTS, t
@@ -157,6 +159,94 @@ logger = logging.getLogger(__name__)
 
 _processing_requests: Dict[str, float] = {}
 _PROCESSING_TTL = 300.0
+
+
+async def _open_admin_category_picker(cb: CallbackQuery, state: FSMContext, prefix: str, payload: dict) -> None:
+    data = await state.get_data()
+    selected = categories_for(payload) or categories_for(payload.get("old_plugin") or {})
+    picker = {
+        "prefix": prefix,
+        "keys": selected,
+        "context": data.get("current_request" if prefix == "adm" else "edit_slug"),
+        "state": await state.get_state(),
+    }
+    await state.update_data(category_selection=picker, edit_field="category", **category_fields(selected))
+    sent = await answer(cb, _tr(cb, "admin_choose_category"), draft_category_kb(prefix, get_categories(), _lang_for(cb), selected), None)
+    picker["message_id"] = sent.message_id if sent else None
+    picker["chat_id"] = sent.chat.id if sent else None
+    await state.update_data(category_selection=picker)
+
+
+async def _admin_category_picker_valid(cb: CallbackQuery, state: FSMContext, prefix: str) -> bool:
+    allowed = _is_super_admin(cb) if prefix == "adm" else _ensure_admin_role(cb, "plugins")
+    if not allowed:
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return False
+    data = await state.get_data()
+    picker = data.get("category_selection") or {}
+    context = data.get("current_request" if prefix == "adm" else "edit_slug")
+    valid = (
+        context
+        and picker.get("context") == context
+        and picker.get("prefix") == prefix
+        and data.get("edit_field") == "category"
+        and picker.get("state") == await state.get_state()
+        and cb.message
+        and picker.get("message_id") == cb.message.message_id
+        and picker.get("chat_id") == cb.message.chat.id
+    )
+    if valid and prefix == "adm":
+        entry = get_request_by_id(context)
+        valid = bool(entry and entry.get("type") in {"new", "update"}
+                     and entry.get("status") in {"draft", "pending", "rework", "scheduled", "error"}
+                     and not entry.get("payload", {}).get("icon") and _ensure_request_role(cb, entry))
+    if valid and prefix == "adm_edit":
+        valid = bool(data.get("edit_payload") and find_plugin_by_slug(context))
+    if not valid:
+        await cb.answer(_tr(cb, "not_found"), show_alert=True)
+    return bool(valid)
+
+
+async def _choose_admin_categories(cb: CallbackQuery, state: FSMContext, prefix: str) -> bool:
+    if not await _admin_category_picker_valid(cb, state, prefix):
+        return False
+    data = await state.get_data()
+    picker = dict(data["category_selection"])
+    selected = categories_for(picker.get("keys"))
+    action = (cb.data or "").removeprefix(f"{prefix}:cat:")
+    if action == "done":
+        if not selected:
+            await cb.answer(_tr(cb, "categories_required"), show_alert=True)
+            return False
+        fields = category_fields(selected)
+        if prefix == "adm":
+            entry = get_request_by_id(data["current_request"])
+            plugin = dict(entry.get("payload", {}).get("plugin") or {})
+            plugin["categories"] = selected
+            update_request_payload(data["current_request"], {**fields, "plugin": plugin})
+        else:
+            payload = dict(data["edit_payload"])
+            plugin = dict(payload.get("plugin") or {})
+            plugin["categories"] = selected
+            payload.update(fields, plugin=plugin)
+            await state.update_data(edit_payload=payload)
+        await state.update_data(**fields, category_selection=None, edit_field=None)
+        return True
+    if action not in CATEGORY_KEYS:
+        await cb.answer(_tr(cb, "not_found"), show_alert=True)
+        return False
+    if action in selected:
+        selected.remove(action)
+    elif len(selected) >= MAX_CATEGORIES:
+        await cb.answer(_tr(cb, "categories_limit"), show_alert=True)
+        return False
+    else:
+        selected.append(action)
+    picker["keys"] = selected
+    await state.update_data(category_selection=picker)
+    await cb.message.edit_reply_markup(reply_markup=draft_category_kb(prefix, get_categories(), _lang_for(cb), selected))
+    await ack(cb)
+    return False
 
 
 def _acquire_request_lock(request_id: str) -> bool:
@@ -389,13 +479,17 @@ async def _send_review_document(cb: CallbackQuery, entry: dict, reply_message) -
     payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
     plugin = payload.get("plugin", {}) if isinstance(payload.get("plugin"), dict) else {}
     stored_file_id = str(payload.get("moderation_file_id") or plugin.get("file_id") or "").strip()
-    document = plugin_document(plugin, stored_file_id)
-    if not document:
+    if plugin.get("category_file_changed"):
+        stored_file_id = str(plugin.get("file_id") or "").strip()
+    if not stored_file_id and not Path(plugin.get("file_path") or "").is_file():
         return
+    if stored_file_id:
+        plugin["file_id"] = stored_file_id
     try:
-        await cb.bot.send_document(
+        await send_plugin_document(
+            cb.bot,
             cb.message.chat.id,
-            document=document,
+            plugin,
             disable_notification=True,
             reply_to_message_id=reply_message.message_id if reply_message else cb.message.message_id,
             allow_sending_without_reply=True,
@@ -1272,7 +1366,7 @@ async def _render_review(cb: CallbackQuery, state: FSMContext, token: str) -> No
         await _render_menu(cb, state)
         return
     await state.set_state(AdminFlow.reviewing)
-    await state.update_data(current_request=request_id, draft_message_id=cb.message.message_id if cb.message else None)
+    await state.update_data(current_request=request_id, category_selection=None, **category_fields(entry.get("payload", {})), draft_message_id=cb.message.message_id if cb.message else None)
 
     payload = entry.get("payload", {})
     if _is_appeal(entry):
@@ -1467,9 +1561,8 @@ def _validate_request_before_publish(entry: dict | None) -> list[str]:
         errors.append("Не указан путь к файлу")
     elif not Path(file_path).exists():
         errors.append(f"Файл не найден: {file_path}")
-    if submission_type != "icon" and request_type != "update":
-        category = str(payload.get("category_key") or "").strip()
-        if not category:
+    if submission_type != "icon":
+        if not (categories_for(payload) or categories_for(payload.get("old_plugin") or {})):
             errors.append("Не указана категория")
     try:
         draft = _render_request_draft(entry)
@@ -1498,6 +1591,7 @@ def _render_request_draft(entry: dict, *, include_context: bool = True, lang: st
     fallback_desc = plugin.get("description", "")
     patched_payload = {
         **payload,
+        **category_fields(payload),
         "description_ru": payload.get("description_ru") or fallback_desc,
         "description_en": payload.get("description_en") or fallback_desc,
     }
@@ -2300,6 +2394,10 @@ async def on_cancel(cb: CallbackQuery, state: FSMContext) -> None:
         await ack(cb, _tr(cb, "admin_denied"), show_alert=True)
         return
 
+    picker = (await state.get_data()).get("category_selection")
+    if picker and not await _admin_category_picker_valid(cb, state, picker.get("prefix")):
+        return
+    await state.update_data(category_selection=None, edit_field=None)
     current = await state.get_state()
     if current in _TRANSIENT_ADMIN_STATES:
         if current == AdminFlow.entering_reject_comment.state:
@@ -4941,13 +5039,15 @@ async def on_admin_edit_select(cb: CallbackQuery, state: FSMContext) -> None:
         "description_en": plugin.get("en", {}).get("description") or "",
         "usage_ru": plugin.get("ru", {}).get("usage") or "",
         "usage_en": plugin.get("en", {}).get("usage") or "",
-        "category_key": plugin.get("category") or "",
+        **category_fields(plugin),
     }
 
     draft_text = build_channel_post({"payload": edit_payload})
     await state.update_data(
         edit_slug=slug,
         edit_payload=edit_payload,
+        **category_fields(edit_payload),
+        category_selection=None,
         edit_message_id=cb.message.message_id if cb.message else None,
     )
     await state.set_state(AdminFlow.editing_catalog_plugin)
@@ -5206,6 +5306,8 @@ async def on_admin_review(cb: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminFlow.reviewing)
     await state.update_data(
         current_request=request_id,
+        **category_fields(payload),
+        category_selection=None,
         draft_message_id=cb.message.message_id if cb.message else None,
     )
 
@@ -5577,8 +5679,12 @@ async def on_admin_draft_edit(cb: CallbackQuery, state: FSMContext) -> None:
         return
 
     if field == "category":
-        await state.update_data(edit_field=field)
-        await answer(cb, _tr(cb, "admin_choose_category"), draft_category_kb("adm", get_categories(), lang=lang), None)
+        data = await state.get_data()
+        entry = get_request_by_id(data.get("current_request")) if data.get("current_request") else None
+        if not entry or entry.get("type") not in {"new", "update"} or not _ensure_request_role(cb, entry):
+            await cb.answer(_tr(cb, "not_found"), show_alert=True)
+            return
+        await _open_admin_category_picker(cb, state, "adm", entry.get("payload", {}))
         await ack(cb)
         return
 
@@ -5641,8 +5747,14 @@ async def on_admin_catalog_edit(cb: CallbackQuery, state: FSMContext) -> None:
         return
 
     if field == "category":
-        await state.update_data(edit_field=field)
-        await answer(cb, _tr(cb, "admin_choose_category"), draft_category_kb("adm_edit", get_categories(), lang=lang), None)
+        if not _ensure_admin_role(cb, "plugins"):
+            await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+            return
+        data = await state.get_data()
+        if not data.get("edit_slug") or not data.get("edit_payload") or await state.get_state() != AdminFlow.editing_catalog_plugin.state:
+            await cb.answer(_tr(cb, "not_found"), show_alert=True)
+            return
+        await _open_admin_category_picker(cb, state, "adm_edit", data["edit_payload"])
         await ack(cb)
         return
 
@@ -5675,14 +5787,8 @@ async def on_admin_catalog_language(cb: CallbackQuery, state: FSMContext) -> Non
 @router.callback_query(F.data.startswith("adm_edit:cat:"))
 async def on_admin_catalog_category(cb: CallbackQuery, state: FSMContext) -> None:
     lang = _lang_for(cb)
-    cat_key = cb.data.split(":")[2]
-    category = next((c for c in get_categories() if c.get("key") == cat_key), None)
-    if category:
-        data = await state.get_data()
-        payload = data.get("edit_payload", {})
-        payload["category_key"] = cat_key
-        payload["category_label"] = f"{category.get('ru', '')} / {category.get('en', '')}"
-        await state.update_data(edit_payload=payload)
+    if not await _choose_admin_categories(cb, state, "adm_edit"):
+        return
 
     data = await state.get_data()
     payload = data.get("edit_payload", {})
@@ -5700,7 +5806,13 @@ async def on_admin_catalog_category(cb: CallbackQuery, state: FSMContext) -> Non
 @router.callback_query(F.data == "adm_edit:back")
 async def on_admin_catalog_back(cb: CallbackQuery, state: FSMContext) -> None:
     lang = _lang_for(cb)
+    if not _ensure_admin_role(cb, "plugins"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
     data = await state.get_data()
+    if data.get("category_selection") and not await _admin_category_picker_valid(cb, state, "adm_edit"):
+        return
+    await state.update_data(category_selection=None, edit_field=None)
     payload = data.get("edit_payload", {})
     draft_text = build_channel_post({"payload": payload})
     await state.set_state(AdminFlow.editing_catalog_plugin)
@@ -5796,8 +5908,10 @@ async def on_admin_catalog_file(message: Message, state: FSMContext) -> None:
     payload = data.get("edit_payload", {})
     plugin_dict = plugin.to_dict()
     plugin_dict["file_path"] = plugin_dict.get("file_path")
-    payload["plugin"] = plugin_dict
-    await state.update_data(edit_payload=payload)
+    fields = category_fields(categories_for(payload) or categories_for(plugin_dict))
+    plugin_dict["categories"] = fields["category_keys"]
+    payload.update(fields, plugin=plugin_dict)
+    await state.update_data(edit_payload=payload, **fields, category_selection=None)
     await state.set_state(AdminFlow.editing_catalog_plugin)
 
     draft_text = build_channel_post({"payload": payload})
@@ -5839,6 +5953,9 @@ async def on_admin_catalog_submit(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer(_tr(cb, "admin_channel_message_missing"), show_alert=True)
         return
 
+    if not categories_for(payload):
+        await cb.answer(_tr(cb, "categories_required"), show_alert=True)
+        return
     await cb.answer(_tr(cb, "admin_updating"))
     from userbot.client import get_userbot
 
@@ -5847,11 +5964,19 @@ async def on_admin_catalog_submit(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer(_tr(cb, "admin_userbot_unavailable"), show_alert=True)
         return
 
+    await prepare_catalog_categories(payload, plugin_entry, userbot)
+    await state.update_data(edit_payload=payload, **category_fields(payload), category_selection=None)
     entry = {"payload": payload}
     post_text = build_channel_post(entry)
     file_path = payload.get("plugin", {}).get("file_path")
-    await userbot.update_message(message_id, post_text, file_path)
+    from bot.helpers import fit_filename
+    download_name = fit_filename(str(payload.get("plugin", {}).get("id") or "plugin"), payload_extension(payload.get("plugin") or {}))
+    await userbot.update_message(message_id, post_text, file_path, download_name)
     update_catalog_entry(slug, entry, message_id)
+    from core.storage import flush_documents
+    await flush_documents("plugins")
+    if file_path:
+        Path(file_path).unlink(missing_ok=True)
 
     await state.set_state(AdminFlow.menu)
     await answer(cb, _tr(cb, "admin_title"), admin_menu_kb(_admin_menu_role(cb), lang=lang), "admin")
@@ -5882,21 +6007,8 @@ async def on_admin_draft_category(cb: CallbackQuery, state: FSMContext) -> None:
     if not _is_super_admin(cb):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
-    cat_key = cb.data.split(":")[2]
-    category = next((c for c in get_categories() if c.get("key") == cat_key), None)
-    if category:
-        await state.update_data(
-            category_key=cat_key,
-            category_label=f"{category.get('ru', '')} / {category.get('en', '')}",
-        )
-
-        data = await state.get_data()
-        request_id = data.get("current_request")
-        if request_id:
-            update_request_payload(request_id, {
-                "category_key": cat_key,
-                "category_label": f"{category.get('ru', '')} / {category.get('en', '')}",
-            })
+    if not await _choose_admin_categories(cb, state, "adm"):
+        return
 
     entry = get_request_by_id((await state.get_data()).get("current_request"))
     if entry:
@@ -5920,6 +6032,20 @@ async def on_admin_draft_category(cb: CallbackQuery, state: FSMContext) -> None:
 async def on_admin_draft_back(cb: CallbackQuery, state: FSMContext) -> None:
     if not _ensure_admin(cb):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    data = await state.get_data()
+    picker = data.get("category_selection") if isinstance(data, dict) else None
+    if isinstance(picker, dict) and picker.get("prefix") in {"adm", "adm_edit"}:
+        if not await _admin_category_picker_valid(cb, state, "adm"):
+            return
+        await state.update_data(category_selection=None, edit_field=None)
+        entry = get_request_by_id(data.get("current_request"))
+        await state.set_state(AdminFlow.reviewing)
+        await answer(cb, _render_request_draft(entry, lang=_lang_for(cb)), draft_edit_kb(
+            "adm", _tr(cb, "admin_submit_publish"), include_back=True, include_file=True,
+            include_schedule=_can_schedule_request(entry), lang=_lang_for(cb),
+        ))
+        await ack(cb)
         return
     spawn_background(ack(cb))
     prev = await _nav_prev(state)
@@ -7721,7 +7847,10 @@ async def on_admin_request_file_upload(message: Message, state: FSMContext) -> N
     payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
     plugin = dict(payload.get("plugin") or {})
     plugin.update(parsed.to_dict())
-    update_request_payload(request_id, {"plugin": plugin, "file_replaced_by": _admin_actor_label(message)})
+    fields = category_fields(categories_for(payload) or categories_for(plugin))
+    plugin["categories"] = fields["category_keys"]
+    update_request_payload(request_id, {**fields, "plugin": plugin, "file_replaced_by": _admin_actor_label(message)})
+    await state.update_data(**fields, category_selection=None)
     add_audit_event(
         "moderation.file_replaced",
         actor_id=_actor_id(message),

@@ -24,6 +24,7 @@ from bot.context import get_language, get_lang
 from bot.languages import normalize_language
 from bot.callback_tokens import decode_slug, encode_slug
 from core.plugin_formats import plugin_file_limit
+from core.categories import CATEGORY_KEYS, MAX_CATEGORIES, categories_for, category_fields
 from bot import limits
 from bot.formatting import plain_html, strip_blockquote_tags, telegram_html, user_mention
 from bot.helpers import ack, answer, extract_html_text, spawn_background, try_react_pray
@@ -51,6 +52,7 @@ from bot.services.submission import (
     PluginData,
     build_submission_payload,
     process_plugin_file,
+    prepare_submission_categories,
 )
 from bot.services.publish import build_channel_post
 from bot.services.admin_notifications import send_review_notifications
@@ -204,6 +206,93 @@ async def _ensure_not_banned(target: Message | CallbackQuery, state: FSMContext)
     return True
 
 
+async def _open_category_picker(target: Message | CallbackQuery, state: FSMContext, prefix: str, lang: str) -> None:
+    data = await state.get_data()
+    selected = categories_for(data)
+    picker = {
+        "prefix": prefix,
+        "keys": selected,
+        "request_id": data.get("pending_request_id"),
+        "state": await state.get_state(),
+    }
+    await state.update_data(category_selection=picker, edit_field="category")
+    keyboard = categories_kb(get_categories(), lang, selected) if prefix == "submit" else draft_category_kb(prefix, get_categories(), lang, selected)
+    sent = await answer(target, t("choose_category", lang), keyboard, None)
+    picker["message_id"] = sent.message_id if sent else None
+    picker["chat_id"] = sent.chat.id if sent else None
+    await state.update_data(category_selection=picker)
+
+
+async def _category_picker_valid(cb: CallbackQuery, state: FSMContext, prefix: str, lang: str) -> bool:
+    data = await state.get_data()
+    picker = data.get("category_selection") or {}
+    valid = (
+        picker.get("prefix") == prefix
+        and data.get("edit_field") == "category"
+        and picker.get("state") == await state.get_state()
+        and cb.message
+        and picker.get("message_id") == cb.message.message_id
+        and picker.get("chat_id") == cb.message.chat.id
+        and picker.get("request_id") == data.get("pending_request_id")
+    )
+    if valid and prefix in {"pend", "pendupd"}:
+        entry = get_request_by_id(data.get("pending_request_id"))
+        valid = bool(
+            entry
+            and entry.get("status") in _EDITABLE_REQUEST_STATUSES
+            and entry.get("type") == ("update" if prefix == "pendupd" else "new")
+            and entry.get("payload", {}).get("user_id") == cb.from_user.id
+        )
+    if not valid:
+        await cb.answer(t("not_found", lang), show_alert=True)
+    return bool(valid)
+
+
+async def _choose_categories(cb: CallbackQuery, state: FSMContext, prefix: str, lang: str) -> bool:
+    if not await _ensure_not_banned(cb, state) or not await _category_picker_valid(cb, state, prefix, lang):
+        return False
+    action = (cb.data or "").removeprefix(f"{prefix}:cat:")
+    picker = dict((await state.get_data())["category_selection"])
+    selected = categories_for(picker.get("keys"))
+    if action == "done":
+        if not selected:
+            await cb.answer(t("categories_required", lang), show_alert=True)
+            return False
+        data = await state.get_data()
+        plugin = dict(data.get("plugin") or {})
+        plugin["categories"] = selected
+        await state.update_data(**category_fields(selected), plugin=plugin, category_selection=None, edit_field=None)
+        return True
+    if action not in CATEGORY_KEYS:
+        await cb.answer(t("not_found", lang), show_alert=True)
+        return False
+    if action in selected:
+        selected.remove(action)
+    elif len(selected) >= MAX_CATEGORIES:
+        await cb.answer(t("categories_limit", lang), show_alert=True)
+        return False
+    else:
+        selected.append(action)
+    picker["keys"] = selected
+    await state.update_data(category_selection=picker)
+    keyboard = categories_kb(get_categories(), lang, selected) if prefix == "submit" else draft_category_kb(prefix, get_categories(), lang, selected)
+    await cb.message.edit_reply_markup(reply_markup=keyboard)
+    await ack(cb)
+    return False
+
+
+async def _prepare_request_categories(entry: Dict[str, Any]) -> None:
+    payload = entry.get("payload") or {}
+    if entry.get("type") not in {"new", "update"} or not payload.get("plugin"):
+        return
+    changed = await prepare_submission_categories(payload)
+    updates = {**category_fields(payload), "plugin": payload["plugin"]}
+    if changed:
+        payload["moderation_file_id"] = None
+        updates["moderation_file_id"] = None
+    update_request_payload(entry["id"], updates)
+
+
 def _build_draft_entry(data: Dict[str, Any]) -> Dict[str, Any]:
     plugin = data.get("plugin", {})
     payload = {
@@ -212,7 +301,7 @@ def _build_draft_entry(data: Dict[str, Any]) -> Dict[str, Any]:
         "description_en": data.get("description_en"),
         "usage_ru": data.get("usage_ru"),
         "usage_en": data.get("usage_en"),
-        "category_key": data.get("category_key"),
+        **category_fields(data),
         "publish_not_before": data.get("publish_not_before"),
     }
     return {"payload": payload}
@@ -258,7 +347,7 @@ def _render_update_text(data: Dict[str, Any]) -> str:
         "description_en": data.get("description_en"),
         "usage_ru": data.get("usage_ru"),
         "usage_en": data.get("usage_en"),
-        "category_key": data.get("category_key"),
+        **category_fields(data),
     }
     text = build_channel_post({"payload": payload})
     context = author_context(data, data.get("lang") or "ru")
@@ -509,8 +598,7 @@ async def _sync_submission_draft(
         "description_en": data.get("description_en"),
         "usage_ru": data.get("usage_ru"),
         "usage_en": data.get("usage_en"),
-        "category_key": data.get("category_key"),
-        "category_label": data.get("category_label"),
+        **category_fields(data),
         "publish_not_before": data.get("publish_not_before"),
         "submission_type": "plugin",
     }
@@ -533,8 +621,7 @@ async def _sync_pending_plugin_request(state: FSMContext, request_id: str) -> No
         "description_en": data.get("description_en"),
         "usage_ru": data.get("usage_ru"),
         "usage_en": data.get("usage_en"),
-        "category_key": data.get("category_key"),
-        "category_label": data.get("category_label"),
+        **category_fields(data),
         "publish_not_before": data.get("publish_not_before"),
         "submission_type": "plugin",
     }
@@ -555,8 +642,7 @@ async def _sync_pending_update_request(state: FSMContext, request_id: str) -> No
         "description_en": data.get("description_en"),
         "usage_ru": data.get("usage_ru"),
         "usage_en": data.get("usage_en"),
-        "category_key": data.get("category_key"),
-        "category_label": data.get("category_label"),
+        **category_fields(data),
         "submission_type": "update",
     }
     update_request_payload(request_id, payload)
@@ -865,8 +951,7 @@ async def on_open_pending_update_request(cb: CallbackQuery, state: FSMContext) -
         description_en=payload.get("description_en", ""),
         usage_ru=payload.get("usage_ru", ""),
         usage_en=payload.get("usage_en", ""),
-        category_key=payload.get("category_key", ""),
-        category_label=payload.get("category_label", ""),
+        **category_fields(categories_for(payload) or categories_for(payload.get("old_plugin") or {})),
         admin_comment=payload.get("admin_comment", ""),
         comment_media=payload.get("comment_media", []),
         is_appeal=payload.get("is_appeal", False),
@@ -922,6 +1007,10 @@ async def on_home(cb: CallbackQuery, state: FSMContext) -> None:
 async def on_cancel(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
     data = await state.get_data()
+    picker = data.get("category_selection")
+    if picker and not await _category_picker_valid(cb, state, picker.get("prefix"), lang):
+        return
+    await state.update_data(category_selection=None, edit_field=None)
     draft_id = data.get("draft_request_id")
     if draft_id:
         delete_request_and_file(draft_id)
@@ -1063,7 +1152,7 @@ async def on_choose_plugin_update(cb: CallbackQuery, state: FSMContext) -> None:
         return
 
     current_version = plugin.get("ru", {}).get("version") or "?"
-    await state.update_data(update_slug=slug, old_plugin=plugin, old_version=current_version)
+    await state.update_data(update_slug=slug, old_plugin=plugin, old_version=current_version, **category_fields(plugin), category_selection=None)
     await state.set_state(UserFlow.uploading_update_file)
     await answer(cb, t("upload_update_file", lang, version=current_version), cancel_kb(lang), "update")
     await ack(cb)
@@ -1100,8 +1189,7 @@ async def on_open_pending_request(cb: CallbackQuery, state: FSMContext) -> None:
         description_en=payload.get("description_en", ""),
         usage_ru=payload.get("usage_ru", ""),
         usage_en=payload.get("usage_en", ""),
-        category_key=payload.get("category_key", ""),
-        category_label=payload.get("category_label", ""),
+        **category_fields(payload),
         publish_not_before=payload.get("publish_not_before"),
         admin_comment=payload.get("admin_comment", ""),
         comment_media=payload.get("comment_media", []),
@@ -1190,7 +1278,7 @@ async def on_profile_update(cb: CallbackQuery, state: FSMContext) -> None:
         return
 
     current_version = plugin.get("ru", {}).get("version") or "?"
-    await state.update_data(update_slug=slug, old_plugin=plugin, old_version=current_version)
+    await state.update_data(update_slug=slug, old_plugin=plugin, old_version=current_version, **category_fields(plugin), category_selection=None)
     await state.set_state(UserFlow.uploading_update_file)
     await answer(cb, t("upload_update_file", lang, version=current_version), cancel_kb(lang), "update")
     await ack(cb)
@@ -1257,7 +1345,9 @@ async def on_update_file(message: Message, state: FSMContext) -> None:
         "has_ui_settings": new_plugin.get("has_ui_settings", old_has_settings),
     }
 
-    await state.update_data(plugin=merged_plugin)
+    fields = category_fields(categories_for(new_plugin) or categories_for(old_plugin))
+    merged_plugin["categories"] = fields["category_keys"]
+    await state.update_data(plugin=merged_plugin, **fields)
     await state.set_state(UserFlow.entering_changelog)
     await answer(message, t("enter_changelog", lang), cancel_kb(lang), "update")
 
@@ -1284,21 +1374,12 @@ async def on_changelog(message: Message, state: FSMContext) -> None:
     old_ru = (old_plugin.get("ru") or {}) if isinstance(old_plugin, dict) else {}
     old_en = (old_plugin.get("en") or {}) if isinstance(old_plugin, dict) else {}
 
-    category_key = (old_plugin.get("category") if isinstance(old_plugin, dict) else "") or ""
-    category_key = str(category_key).strip()
-    category_label = ""
-    if category_key:
-        category = next((c for c in get_categories() if c.get("key") == category_key), None)
-        if category:
-            category_label = f"{category.get('ru', '')} / {category.get('en', '')}"
-
     await state.update_data(
         description_ru=old_ru.get("description", ""),
         description_en=old_en.get("description", ""),
         usage_ru=old_ru.get("usage", ""),
         usage_en=old_en.get("usage", ""),
-        category_key=category_key,
-        category_label=category_label,
+        **category_fields(data),
         draft_prefix="upd",
         edit_field=None,
         edit_lang=None,
@@ -1329,9 +1410,17 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
 
     prefix = cb.data.split(":", 2)[0]
-    action = cb.data.split(":", 2)[1]
+    parts = cb.data.split(":", 2)
+    if len(parts) < 2 or prefix != (await state.get_data()).get("draft_prefix"):
+        await cb.answer(t("not_found", lang), show_alert=True)
+        return
+    action = parts[1]
     if action == "edit":
-        field = cb.data.split(":", 2)[2]
+        if len(parts) != 3:
+            await cb.answer(t("not_found", lang), show_alert=True)
+            return
+        await state.update_data(category_selection=None)
+        field = parts[2]
         if field == "file" and prefix == "pendupd":
             await state.set_state(UserFlow.uploading_pending_update_file)
             await answer(cb, t("pending_upload_update_plugin", lang), cancel_kb(lang), None)
@@ -1343,10 +1432,7 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
             await cb.answer()
             return
         if field == "category":
-            await state.update_data(edit_field=field)
-            from bot.cache import get_categories
-
-            await answer(cb, t("admin_choose_category", lang), draft_category_kb(prefix, get_categories(), lang=lang), None)
+            await _open_category_picker(cb, state, prefix, lang)
             await cb.answer()
             return
 
@@ -1376,21 +1462,13 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
         return
 
     if action == "cat":
-        from bot.cache import get_categories
-
-        cat_key = cb.data.split(":")[2]
-        category = next((c for c in get_categories() if c.get("key") == cat_key), None)
-        if category:
-            await state.update_data(
-                category_key=cat_key,
-                category_label=f"{category.get('ru', '')} / {category.get('en', '')}",
-            )
-
-            if prefix == "pendupd":
-                data = await state.get_data()
-                req_id = str(data.get("pending_request_id") or "")
-                if req_id:
-                    await _sync_pending_update_request(state, req_id)
+        if not await _choose_categories(cb, state, prefix, lang):
+            return
+        if prefix == "pendupd":
+            data = await state.get_data()
+            req_id = str(data.get("pending_request_id") or "")
+            if req_id:
+                await _sync_pending_update_request(state, req_id)
 
         await state.set_state(UserFlow.confirming_update)
         draft_text = _render_update_text(await state.get_data())
@@ -1412,6 +1490,10 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
         return
 
     if action == "back":
+        data = await state.get_data()
+        if data.get("category_selection") and not await _category_picker_valid(cb, state, prefix, lang):
+            return
+        await state.update_data(category_selection=None, edit_field=None)
         await state.set_state(UserFlow.confirming_update)
         draft_text = _render_update_text(await state.get_data())
         await answer(
@@ -1432,6 +1514,10 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
         return
 
     if action == "submit":
+        if not categories_for(await state.get_data()):
+            await cb.answer(t("categories_required", lang), show_alert=True)
+            return
+        await state.update_data(category_selection=None, edit_field=None)
         if prefix == "pendupd":
             data = await state.get_data()
             req_id = str(data.get("pending_request_id") or "")
@@ -1458,7 +1544,7 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
             "description_en": data.get("description_en", ""),
             "usage_ru": data.get("usage_ru", ""),
             "usage_en": data.get("usage_en", ""),
-            "category_key": data.get("category_key", ""),
+            **category_fields(data),
             "submission_type": "update",
         }
 
@@ -1605,7 +1691,9 @@ async def on_pending_update_file(message: Message, state: FSMContext) -> None:
         "has_ui_settings": new_plugin.get("has_ui_settings", existing.get("has_ui_settings")),
     }
 
-    await state.update_data(plugin=merged)
+    fields = category_fields(categories_for(data) or categories_for(new_plugin))
+    merged["categories"] = fields["category_keys"]
+    await state.update_data(plugin=merged, **fields)
     await _sync_pending_update_request(state, req_id)
 
     await state.set_state(UserFlow.confirming_update)
@@ -1675,6 +1763,9 @@ async def on_file(message: Message, state: FSMContext) -> None:
     plugin_dict = plugin.to_dict()
     await state.update_data(
         plugin=plugin_dict,
+        **category_fields(plugin_dict),
+        draft_prefix="draft",
+        category_selection=None,
         description_raw=plugin.description,
     )
 
@@ -1819,25 +1910,22 @@ async def on_usage_en(message: Message, state: FSMContext) -> None:
     await state.update_data(usage_en=text)
     await _sync_submission_draft(state, message.from_user.id, message.from_user.username or "", "plugin")
     await state.set_state(UserFlow.choosing_category)
-    from bot.cache import get_categories
-
-    await answer(message, t("choose_category", lang), categories_kb(get_categories(), lang))
+    await _open_category_picker(message, state, "submit", lang)
 
 
 @router.callback_query(UserFlow.choosing_category, F.data.startswith("submit:cat:"))
 async def on_category_select(cb: CallbackQuery, state: FSMContext) -> None:
-    from bot.cache import get_categories
-
     lang = await get_language(cb, state)
-    cat_key = cb.data.split(":")[2]
-    category = next((c for c in get_categories() if c.get("key") == cat_key), None)
-
-    if not category:
-        await cb.answer(t("not_found", lang), show_alert=True)
+    if cb.data == "submit:cat:back":
+        if not await _category_picker_valid(cb, state, "submit", lang):
+            return
+        await state.update_data(category_selection=None, edit_field=None)
+        await state.set_state(UserFlow.editing_usage_en)
+        await answer(cb, t("enter_usage_en", lang), cancel_kb(lang), None)
+        await ack(cb)
         return
-
-    cat_label = f"{category.get('ru', '')} / {category.get('en', '')}"
-    await state.update_data(category_key=cat_key, category_label=cat_label)
+    if not await _choose_categories(cb, state, "submit", lang):
+        return
     await _sync_submission_draft(state, cb.from_user.id, cb.from_user.username or "", "plugin")
     await state.set_state(UserFlow.confirming_submission)
 
@@ -1863,6 +1951,10 @@ async def on_draft_edit(cb: CallbackQuery, state: FSMContext) -> None:
     prefix = cb.data.split(":", 2)[0]
     field = cb.data.split(":")[2]
     lang = await get_language(cb, state)
+    if prefix != (await state.get_data()).get("draft_prefix", "draft"):
+        await cb.answer(t("not_found", lang), show_alert=True)
+        return
+    await state.update_data(category_selection=None)
 
     if field == "file" and prefix == "pend":
         await state.set_state(UserFlow.uploading_pending_file)
@@ -1877,8 +1969,7 @@ async def on_draft_edit(cb: CallbackQuery, state: FSMContext) -> None:
         return
 
     if field == "category":
-        await state.update_data(edit_field=field)
-        await answer(cb, t("admin_choose_category", lang), draft_category_kb(prefix, get_categories(), lang=lang), None)
+        await _open_category_picker(cb, state, prefix, lang)
         await cb.answer()
         return
 
@@ -1971,20 +2062,15 @@ async def on_draft_language(cb: CallbackQuery, state: FSMContext) -> None:
 async def on_draft_category(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
     prefix = cb.data.split(":", 2)[0]
-    cat_key = cb.data.split(":")[2]
-    category = next((c for c in get_categories() if c.get("key") == cat_key), None)
-    if category:
-        await state.update_data(
-            category_key=cat_key,
-            category_label=f"{category.get('ru', '')} / {category.get('en', '')}",
-        )
-        if prefix == "draft":
-            await _sync_submission_draft(state, cb.from_user.id, cb.from_user.username or "", "plugin")
-        else:
-            data = await state.get_data()
-            req_id = str(data.get("pending_request_id") or "")
-            if req_id:
-                await _sync_pending_plugin_request(state, req_id)
+    if not await _choose_categories(cb, state, prefix, lang):
+        return
+    if prefix == "draft":
+        await _sync_submission_draft(state, cb.from_user.id, cb.from_user.username or "", "plugin")
+    else:
+        data = await state.get_data()
+        req_id = str(data.get("pending_request_id") or "")
+        if req_id:
+            await _sync_pending_plugin_request(state, req_id)
 
     await state.set_state(UserFlow.confirming_submission)
     draft_text = _render_draft_text(await state.get_data())
@@ -2010,6 +2096,10 @@ async def on_draft_category(cb: CallbackQuery, state: FSMContext) -> None:
 async def on_draft_back(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
     prefix = cb.data.split(":", 1)[0]
+    data = await state.get_data()
+    if data.get("category_selection") and not await _category_picker_valid(cb, state, prefix, lang):
+        return
+    await state.update_data(category_selection=None, edit_field=None)
     await state.set_state(UserFlow.confirming_submission)
     draft_text = _render_draft_text(await state.get_data())
     await answer(
@@ -2020,6 +2110,8 @@ async def on_draft_back(cb: CallbackQuery, state: FSMContext) -> None:
             (t("btn_send_to_admin", lang) if prefix == "draft" else t("btn_save_changes", lang)),
             include_cancel=True,
             include_checked_on=False,
+            include_delete=(prefix == "pend"),
+            include_file=(prefix == "pend"),
             lang=lang,
         ),
         "new",
@@ -2184,7 +2276,9 @@ async def on_pending_file(message: Message, state: FSMContext) -> None:
         "has_ui_settings": new_plugin.get("has_ui_settings", existing.get("has_ui_settings")),
     }
 
-    await state.update_data(plugin=merged)
+    fields = category_fields(categories_for(data) or categories_for(new_plugin))
+    merged["categories"] = fields["category_keys"]
+    await state.update_data(plugin=merged, **fields)
     await _sync_pending_plugin_request(state, req_id)
 
     await state.set_state(UserFlow.confirming_submission)
@@ -2218,6 +2312,10 @@ async def on_draft_submit(cb: CallbackQuery, state: FSMContext) -> None:
         return
     lang = await get_language(cb, state)
     prefix = cb.data.split(":", 1)[0]
+    if not categories_for(await state.get_data()):
+        await cb.answer(t("categories_required", lang), show_alert=True)
+        return
+    await state.update_data(category_selection=None, edit_field=None)
 
     if prefix == "pend":
         data = await state.get_data()
@@ -2241,7 +2339,7 @@ async def on_draft_submit(cb: CallbackQuery, state: FSMContext) -> None:
         "description_en": data.get("description_en"),
         "usage_ru": data.get("usage_ru"),
         "usage_en": data.get("usage_en"),
-        "category_key": data.get("category_key"),
+        **category_fields(data),
     })
     if missing:
         labels = ", ".join(t(f"field_{f.replace('.', '_')}", lang) for f in missing)
@@ -2261,7 +2359,7 @@ async def on_draft_submit(cb: CallbackQuery, state: FSMContext) -> None:
         file_id=plugin_dict.get("file_id"),
         file_extension=plugin_dict.get("file_extension", "plugin"),
         app_version=plugin_dict.get("app_version", ""),
-        metadata={k: plugin_dict[k] for k in ("sdk_version", "elyx_version", "requirements", "requires", "localized", "compiled", "main", "metainfo", "icon", "link") if k in plugin_dict},
+        metadata={k: plugin_dict[k] for k in ("sdk_version", "elyx_version", "requirements", "requires", "localized", "compiled", "main", "metainfo", "icon", "link", "categories") if k in plugin_dict},
     )
 
     payload = build_submission_payload(
@@ -2272,9 +2370,10 @@ async def on_draft_submit(cb: CallbackQuery, state: FSMContext) -> None:
         data.get("description_en", ""),
         data.get("usage_ru", ""),
         data.get("usage_en", ""),
-        data.get("category_key", ""),
-        data.get("category_label", ""),
+        data.get("category_keys") or categories_for(data),
+        category_fields(data)["category_label"],
     )
+    payload.update(category_fields(data))
     if data.get("publish_not_before"):
         payload["publish_not_before"] = data.get("publish_not_before")
 
@@ -2561,6 +2660,10 @@ async def _finalize_submission(
     if media:
         payload["comment_media"] = list(media)[:COMMENT_MEDIA_LIMIT]
 
+    if request_type in {"new", "update"} and payload.get("plugin"):
+        if await prepare_submission_categories(payload):
+            payload["moderation_file_id"] = None
+
     if request_type == "update":
         user_id = payload.get("user_id")
         update_slug_raw = payload.get("update_slug")
@@ -2616,8 +2719,7 @@ async def _finalize_submission(
                     "description_en": _prefer(keep_payload.get("description_en"), payload.get("description_en")),
                     "usage_ru": _prefer(keep_payload.get("usage_ru"), payload.get("usage_ru")),
                     "usage_en": _prefer(keep_payload.get("usage_en"), payload.get("usage_en")),
-                    "category_key": _prefer(keep_payload.get("category_key"), payload.get("category_key")),
-                    "category_label": _prefer(keep_payload.get("category_label"), payload.get("category_label")),
+                    **category_fields(categories_for(payload) or categories_for(keep_payload)),
                 }
 
                 if keep_id:
@@ -2785,11 +2887,13 @@ async def on_resubmit_request(cb: CallbackQuery, state: FSMContext) -> None:
         return
 
     payload = entry.get("payload") or {}
+    payload.update(category_fields(categories_for(payload) or categories_for(payload.get("old_plugin") or {})))
     missing = missing_draft_fields(payload)
     if missing:
         await cb.answer(t("resubmit_missing_fields", lang), show_alert=True)
         return
 
+    await _prepare_request_categories(entry)
     snapshot = str(payload.get("rework_fingerprint") or "")
     if snapshot and submission_fingerprint(payload) == snapshot:
         await cb.answer(t("resubmit_no_changes", lang), show_alert=True)
@@ -2844,9 +2948,11 @@ async def on_update_note(message: Message, state: FSMContext) -> None:
         return
 
     payload = entry.get("payload") or {}
+    payload.update(category_fields(categories_for(payload) or categories_for(payload.get("old_plugin") or {})))
     if missing_draft_fields(payload):
         await message.answer(t("resubmit_missing_fields", lang))
         return
+    await _prepare_request_categories(entry)
     if entry.get("status") == "rework":
         snapshot = str(payload.get("rework_fingerprint") or "")
         if snapshot and submission_fingerprint(payload) == snapshot:
@@ -2862,3 +2968,8 @@ async def on_update_note(message: Message, state: FSMContext) -> None:
     await state.set_state(UserFlow.idle)
     delivered = await _notify_admins_request_updated(message.bot, entry, note)
     await message.answer(t("update_note_saved" if delivered else "update_note_delivery_failed", lang), parse_mode=ParseMode.HTML)
+
+
+@router.callback_query(F.data.regexp(r"^(submit|draft|pend|upd|pendupd):cat:"))
+async def on_stale_category(cb: CallbackQuery, state: FSMContext) -> None:
+    await cb.answer(t("not_found", await get_language(cb, state)), show_alert=True)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from bot.services.plugin_files import plugin_document
+from bot.services.plugin_files import send_plugin_document
 from bot.services.request_context import archive_context
 
 import logging
@@ -460,9 +460,10 @@ async def send_request_to_forum(bot, entry: dict, text: str, file_path: str | No
         if len(parts) > 1:
             logger.info("forum request sent in parts request_id=%s parts=%s", request_id, len(parts))
         if file_path and Path(file_path).exists():
-            file_msg = await bot.send_document(
+            file_msg = await send_plugin_document(
+                bot,
                 chat_id,
-                plugin_document({**(entry.get("payload", {}).get("plugin") or {}), "file_path": file_path}),
+                {**(entry.get("payload", {}).get("plugin") or {}), "file_path": file_path},
                 message_thread_id=topic_id,
                 reply_to_message_id=msg.message_id,
                 allow_sending_without_reply=True,

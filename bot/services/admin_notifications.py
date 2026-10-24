@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from bot.services.plugin_files import plugin_document
+from bot.services.plugin_files import send_plugin_document
 
 import html
 import logging
@@ -202,9 +202,10 @@ async def send_review_notification(bot, chat_id: int, entry: dict[str, Any], tex
         sent_message_ids.append(int(msg.message_id))
         file_msg = None
         if file_path and Path(file_path).exists():
-            file_msg = await bot.send_document(
+            file_msg = await send_plugin_document(
+                bot,
                 chat_id,
-                plugin_document({**(entry.get("payload", {}).get("plugin") or {}), "file_path": file_path}),
+                {**(entry.get("payload", {}).get("plugin") or {}), "file_path": file_path},
                 reply_to_message_id=msg.message_id,
                 allow_sending_without_reply=True,
                 disable_notification=True,

@@ -51,19 +51,25 @@ ICONS: dict[str, str] = {
 
 
 CATEGORY_ICONS: dict[str, str] = {
-    "informational": ICONS["stats"],
-    "utilities": ICONS["tools"],
-    "customization": ICONS["art"],
+    "appearance": ICONS["art"],
+    "chats": ICONS["support"],
+    "media": ICONS["file"],
+    "privacy": ICONS["lock"],
+    "tools": ICONS["tools"],
+    "integrations": ICONS["link"],
     "fun": ICONS["game"],
-    "library": ICONS["library"],
+    "libraries": ICONS["library"],
 }
 
 CATEGORY_FALLBACKS: dict[str, str] = {
-    "informational": "📊",
-    "utilities": "🛠",
-    "customization": "🎨",
+    "appearance": "🎨",
+    "chats": "💬",
+    "media": "📄",
+    "privacy": "🔒",
+    "tools": "🛠",
+    "integrations": "🔗",
     "fun": "🎮",
-    "library": "📚",
+    "libraries": "📚",
 }
 
 

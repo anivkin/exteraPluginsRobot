@@ -19,6 +19,10 @@ from core.request_store import update_request_status
 from bot.cache import get_categories, invalidate, get_config
 from bot import limits
 from core.catalog import invalidate_catalog_cache, plugin_deeplink_token
+from core.categories import categories_for, category_fields
+from core.channel_parser import HASHTAG_TO_CATEGORY
+from bot.languages import category_labels
+from bot.services.submission import prepare_catalog_categories, prepare_submission_categories
 
 
 def _channel_links_line(bot_username: str, slug: str) -> str:
@@ -94,15 +98,14 @@ def build_channel_post(entry: Dict[str, Any], checked_on: Optional[str] = None) 
     payload = entry.get("payload", {})
     plugin = payload.get("plugin", {})
 
-    cat_key = payload.get("category_key")
-    categories = get_categories()
-    category = next((c for c in categories if c.get("key") == cat_key), None)
+    category_keys = categories_for(payload)
+    categories = [category for category in get_categories() if category.get("key") in category_keys]
 
     config = get_config()
     channel_cfg = config.get("channel", {})
-    tags = list(channel_cfg.get("default_tags", []))
+    tags = [tag for tag in channel_cfg.get("default_tags", []) if str(tag).lower() not in HASHTAG_TO_CATEGORY]
 
-    if category:
+    for category in categories:
         if category.get("tag_ru"):
             tags.append(category["tag_ru"])
         if category.get("tag_en"):
@@ -134,6 +137,8 @@ def build_channel_post(entry: Dict[str, Any], checked_on: Optional[str] = None) 
         f"<b>Использование:</b> {usage_ru}",
         f"<b>Настройки:</b> {settings}",
     ]
+    if category_keys:
+        ru_lines.append(f"<b>Категории:</b> {plain_html(category_labels(category_keys, 'ru'))}")
     if min_version_line:
         ru_lines.append(min_version_line)
     if checked_line:
@@ -153,6 +158,8 @@ def build_channel_post(entry: Dict[str, Any], checked_on: Optional[str] = None) 
         f"<b>Usage:</b> {usage_en}",
         f"<b>Settings:</b> {settings}",
     ]
+    if category_keys:
+        en_lines.append(f"<b>Categories:</b> {plain_html(category_labels(category_keys, 'en'))}")
     if min_version_line_en:
         en_lines.append(min_version_line_en)
     if checked_line_en:
@@ -165,7 +172,7 @@ def build_channel_post(entry: Dict[str, Any], checked_on: Optional[str] = None) 
             en_lines.append(f"<b>SDK version:</b> {plain_html(plugin['sdk_version'])}")
     en_block = strip_blockquote_tags("\n".join(en_lines))
 
-    tags_line = join_plain(tags)
+    tags_line = join_plain(list(dict.fromkeys(tags)))
 
     parts = [
         f"<b>🇷🇺 [RU]:</b>\n<blockquote expandable>{ru_block}</blockquote>",
@@ -223,6 +230,7 @@ async def publish_plugin(
     actor_id: int | None = None,
 ) -> Dict[str, Any]:
     payload = entry.get("payload", {})
+    await prepare_submission_categories(payload)
     plugin = payload.get("plugin", {})
     submitter_id = payload.get("user_id")
     submitter_username = payload.get("username", "")
@@ -249,6 +257,9 @@ async def publish_plugin(
         post_text = f"{post_text}\n\n{links_line}"
 
     message = await _send_channel_post(bot, channel_id, post_text, file_path, download_name)
+    document = getattr(message, "document", None)
+    if document and getattr(document, "file_id", None):
+        plugin["file_id"] = document.file_id
 
     update_request_status(entry.get("id"), "published", actor=actor, actor_id=actor_id)
 
@@ -331,6 +342,9 @@ async def update_plugin(
         raise ValueError("Userbot not available")
 
     payload = entry.get("payload", {})
+    if not categories_for(payload):
+        payload.update(category_fields(old_catalog_entry))
+    await prepare_catalog_categories(payload, old_catalog_entry, userbot)
     plugin = payload.get("plugin", {})
 
     old_message = old_catalog_entry.get("channel_message", {})
@@ -343,7 +357,7 @@ async def update_plugin(
         **payload,
         "usage_ru": payload.get("usage_ru") or old_catalog_entry.get("ru", {}).get("usage", ""),
         "usage_en": payload.get("usage_en") or old_catalog_entry.get("en", {}).get("usage", ""),
-        "category_key": payload.get("category_key") or old_catalog_entry.get("category", ""),
+        **category_fields(payload),
     }
     entry_copy = {**entry, "payload": new_payload}
 
@@ -420,7 +434,8 @@ def add_to_catalog(
     catalog_entry = {
         "slug": slug,
         "status": "published",
-        "category": payload.get("category_key"),
+        "category": (categories_for(payload) or [None])[0],
+        "categories": categories_for(payload),
         "authors": {
             "ru": author,
             "en": author,
@@ -680,8 +695,9 @@ def update_catalog_entry(slug: str, entry: Dict[str, Any], message_id: int) -> N
             settings = p.setdefault("settings", {})
             authors = p.setdefault("authors", {})
 
-            if payload.get("category_key"):
-                p["category"] = payload.get("category_key")
+            if categories_for(payload):
+                p["categories"] = categories_for(payload)
+                p["category"] = p["categories"][0]
 
             ru_locale["name"] = (plugin.get("localized") or {}).get("ru", {}).get("name") or plugin.get("name") or ru_locale.get("name")
             en_locale["name"] = (plugin.get("localized") or {}).get("en", {}).get("name") or plugin.get("name") or en_locale.get("name")
@@ -720,8 +736,8 @@ def update_catalog_entry(slug: str, entry: Dict[str, Any], message_id: int) -> N
             requirements.update({k: plugin.get(k) for k in ("app_version", "sdk_version", "elyx_version", "requirements", "requires")})
             p["format"] = plugin.get("format", "python")
             p["plugin_id"] = plugin.get("id") or p.get("plugin_id")
-            if plugin.get("file_id"):
-                p["file"] = {"file_id": plugin["file_id"], "file_name": fit_filename(str(plugin.get("id") or "plugin"), payload_extension(plugin)), "file_extension": payload_extension(plugin)}
+            if plugin.get("file_id") or plugin.get("category_file_changed") or Path(plugin.get("file_path") or "").is_file():
+                p["file"] = {"file_id": plugin.get("file_id"), "file_name": fit_filename(str(plugin.get("id") or "plugin"), payload_extension(plugin)), "file_extension": payload_extension(plugin)}
             p["updated_at"] = datetime.utcnow().isoformat()
             
             changelog = payload.get("changelog", "")

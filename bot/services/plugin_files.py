@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 from aiogram.types import FSInputFile
 
@@ -27,6 +28,40 @@ def plugin_document(plugin: dict, file_id: str | None = None):
     return stored_id or None
 
 
+async def send_plugin_document(bot, chat_id, plugin, **kwargs):
+    path = Path(plugin.get("file_path") or "")
+    if not path.is_file() or path.stat().st_size <= limits.BOT_UPLOAD_BYTES or plugin.get("file_id"):
+        return await bot.send_document(chat_id, document=plugin_document(plugin), **kwargs)
+    from telethon.tl.types import DocumentAttributeFilename
+    from telethon.utils import pack_bot_file_id
+
+    client = await get_file_client()
+    entity = await _file_entity(client, bot, chat_id)
+    name = fit_filename(str(plugin.get("id") or "plugin"), payload_extension(plugin))
+    message = await asyncio.wait_for(client.send_file(
+        entity, str(path), force_document=True, attributes=[DocumentAttributeFilename(name)],
+        reply_to=kwargs.get("reply_to_message_id") or kwargs.get("message_thread_id"),
+        silent=bool(kwargs.get("disable_notification")),
+    ), timeout=600)
+    file_id = pack_bot_file_id(message.document)
+    if not file_id:
+        raise ValueError("large_file_transfer_unavailable")
+    plugin["file_id"] = file_id
+    return SimpleNamespace(message_id=message.id, document=SimpleNamespace(file_id=file_id, file_name=name))
+
+
+async def _file_entity(client, bot, chat_id):
+    try:
+        return await client.get_entity(chat_id)
+    except ValueError:
+        chat = await bot.get_chat(chat_id)
+        if chat.username:
+            return await client.get_entity(chat.username)
+        from telethon.tl.types import InputChannel
+
+        return await client.get_entity(InputChannel(abs(int(chat_id)) - 1000000000000, 0))
+
+
 async def download_large_plugin(bot, document, destination: Path):
     from bot.services.moderation import moderation_config
     client = await get_file_client()
@@ -34,15 +69,7 @@ async def download_large_plugin(bot, document, destination: Path):
 
     transfer_chat = (get_config().get("userbot") or {}).get("file_transfer_chat_id")
     cfg = {"chat_id": int(transfer_chat), "topic_id": None} if transfer_chat else moderation_config()
-    try:
-        entity = await client.get_entity(cfg["chat_id"])
-    except ValueError:
-        chat = await bot.get_chat(cfg["chat_id"])
-        if chat.username:
-            entity = await client.get_entity(chat.username)
-        else:
-            from telethon.tl.types import InputChannel
-            entity = await client.get_entity(InputChannel(abs(int(cfg["chat_id"])) - 1000000000000, 0))
+    entity = await _file_entity(client, bot, cfg["chat_id"])
     if not transfer_chat and not getattr(entity, "megagroup", False):
         raise ValueError("large_file_transfer_unavailable")
     staging = None

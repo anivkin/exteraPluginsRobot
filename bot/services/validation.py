@@ -3,6 +3,7 @@ from typing import Any, Dict, Optional, Tuple
 from core.catalog import find_plugin_by_slug, has_official_plugin_id, is_external_plugin
 from bot.services.publish import make_slug
 from bot.services.versioning import compare_versions, meets_min_supported
+from core.categories import categories_for
 
 REQUIRED_DRAFT_FIELDS = (
     "description_ru",
@@ -27,6 +28,10 @@ _FINGERPRINT_KEYS = (
 def missing_draft_fields(payload: Dict[str, Any]) -> list[str]:
     missing = []
     for key in REQUIRED_DRAFT_FIELDS:
+        if key == "category_key":
+            if not categories_for(payload):
+                missing.append(key)
+            continue
         if not str(payload.get(key) or "").strip():
             missing.append(key)
     plugin = payload.get("plugin") if isinstance(payload.get("plugin"), dict) else {}
@@ -42,6 +47,7 @@ def submission_fingerprint(payload: Dict[str, Any]) -> str:
 
     plugin = payload.get("plugin") if isinstance(payload.get("plugin"), dict) else {}
     parts: Dict[str, Any] = {k: str(payload.get(k) or "").strip() for k in _FINGERPRINT_KEYS}
+    parts["category_keys"] = categories_for(payload)
     for k in ("name", "version", "min_version", "description", "author", "file_id"):
         parts[f"plugin.{k}"] = str(plugin.get(k) or "").strip()
     parts["plugin.has_ui_settings"] = bool(plugin.get("has_ui_settings"))

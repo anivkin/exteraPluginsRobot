@@ -8,6 +8,7 @@ from pathlib import PurePosixPath
 import yaml
 
 from core.plugin_parser import PluginMetadata, PluginParseError, _version_only
+from core.categories import normalize_categories
 
 _MAX_ENTRY = 8 * 1024 * 1024
 _MAX_METADATA = 256 * 1024
@@ -60,8 +61,9 @@ def _mapping(archive, path):
                     if isinstance(target, ast.Name):
                         try:
                             result[target.id] = ast.literal_eval(node.value)
-                        except (ValueError, TypeError):
-                            pass
+                        except (ValueError, TypeError) as exc:
+                            if target.id.strip("_") == "category":
+                                raise PluginParseError("Category metadata must be a literal list") from exc
         return result
     if path.endswith(".json"):
         result = json.loads(data)
@@ -110,6 +112,7 @@ def _parse(path, fallback_version):
             raise PluginParseError("Missing metainfo or refmap.metainfo")
         meta = _mapping(archive, _path(meta_path))
         fields = {str(k).strip("_"): v for k, v in meta.items()}
+        categories = normalize_categories(fields.get("category"), strict=True)
         if not fields.get("version") and fallback_version:
             fields["version"] = fallback_version
         missing = [k for k in ("id", "name", "author", "version") if not isinstance(fields.get(k), str) or not fields[k].strip()]
@@ -178,6 +181,7 @@ def _parse(path, fallback_version):
             id=fields["id"], name=localized["en"]["name"], description=localized["en"]["description"],
             author=fields["author"], version=fields["version"], min_version=minimum or _version_only(app),
             has_ui_settings=has_settings, raw_text=json.dumps(fields, ensure_ascii=False, default=str), app_version=app,
+            categories=categories,
             optional={"sdk_version": fields.get("sdk_version") or "", "elyx_version": fields.get("elyx_version") or "", "requirements": requirements,
                       "requires": requires, "localized": localized, "compiled": compiled,
                       "main": main, "metainfo": meta_path, "icon": fields.get("icon"), "link": fields.get("link")},
