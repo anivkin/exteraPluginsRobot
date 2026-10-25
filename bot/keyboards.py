@@ -151,8 +151,8 @@ def admin_scheduled_list_kb(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def admin_scheduled_item_kb(request_id: str, lang: str = "ru") -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
+def admin_scheduled_item_kb(request_id: str, lang: str = "ru", allow_manage: bool = True) -> InlineKeyboardMarkup:
+    rows = [
         [
             InlineKeyboardButton(text=t("btn_change_time", lang), callback_data=f"adm:scheduled:change_time:{request_callback_token(request_id)}"),
             InlineKeyboardButton(text=t("btn_unschedule", lang), callback_data=f"adm:scheduled:unschedule:{request_callback_token(request_id)}"),
@@ -161,8 +161,10 @@ def admin_scheduled_item_kb(request_id: str, lang: str = "ru") -> InlineKeyboard
             InlineKeyboardButton(text=t("btn_move_up", lang), callback_data=f"adm:scheduled:up:{request_callback_token(request_id)}"),
             InlineKeyboardButton(text=t("btn_move_down", lang), callback_data=f"adm:scheduled:down:{request_callback_token(request_id)}"),
         ],
-        [InlineKeyboardButton(text=t("btn_back", lang), callback_data="adm:scheduled:back", style="danger")],
-    ])
+    ] if allow_manage else []
+    rows.append([_btn(t("btn_open", lang), callback_data=f"adm:review:{request_callback_token(request_id)}", icon="file")])
+    rows.append([_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def categories_kb(categories: list, lang: str, selected=None) -> InlineKeyboardMarkup:
@@ -786,7 +788,10 @@ def admin_plugins_section_kb(lang: str = "ru", role: str | None = None) -> Inlin
             _btn(t("admin_btn_requests", lang), callback_data="adm:queue:plugins:0", icon="requests"),
             _btn(t("admin_btn_updates", lang), callback_data="adm:section:updates", icon="updates"),
         ],
-        [_btn(t("admin_btn_scheduled", lang), callback_data="adm:scheduled:0", icon="clock")],
+        [
+            _btn(t("admin_btn_approved", lang), callback_data="adm:queue:approved:0", icon="yes"),
+            _btn(t("admin_btn_scheduled", lang), callback_data="adm:scheduled:0", icon="clock"),
+        ],
     ]
     if role == "super":
         rows.append([
@@ -805,6 +810,7 @@ _AUDIT_FILTER_BUTTONS = (
     ("pending", "admin_audit_filter_pending"),
     ("rework", "admin_audit_filter_rework"),
     ("scheduled", "admin_audit_filter_scheduled"),
+    ("approved", "admin_audit_filter_approved"),
 )
 
 
@@ -1123,6 +1129,7 @@ def admin_review_kb(
     allow_publish: bool = True,
     allow_vote: bool = True,
     media_count: int = 0,
+    allow_approve: bool = False,
 ) -> InlineKeyboardMarkup:
     vote_token = request_callback_token(request_id)
     submit_callback = submit_callback or f"adm:prepublish:{vote_token}"
@@ -1130,6 +1137,8 @@ def admin_review_kb(
         submit_callback = submit_callback.replace(request_id, vote_token)
     submit_label = submit_label or t("btn_publish", lang)
     rows: list[list[InlineKeyboardButton]] = []
+    if allow_publish and allow_approve:
+        rows.append([_btn(t("admin_btn_approve", lang), callback_data=f"adm:approve:{vote_token}", icon="yes", style="success")])
     if allow_publish:
         rows.append([
             _btn(submit_label, callback_data=submit_callback, icon="yes"),

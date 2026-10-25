@@ -359,7 +359,7 @@ def _relocate_request_files(entry: Dict[str, Any], subdir: str) -> None:
             logger.exception("Failed to relocate %s to %s", src, dest)
 
 
-DECISION_STATUSES = {"published", "rejected", "rework", "deleted", "scheduled"}
+DECISION_STATUSES = {"published", "rejected", "rework", "deleted", "scheduled", "approved"}
 
 
 def update_request_status(
@@ -656,10 +656,14 @@ async def _scheduled_publish_loop(bot) -> None:
     from aiogram.enums import ParseMode
     from bot.context import get_lang
     from bot.texts import t
+    from bot.services.approval import queue_pending_approval_notifications
+    from bot.formatting import plain_html, split_html
+    from bot.services.moderation import with_author_vote_summary
 
     while True:
         await asyncio.sleep(_scheduled_interval_seconds)
         now = _now_utc()
+        queue_pending_approval_notifications(bot)
         for entry in list(get_requests(status="scheduled")):
             request_id = entry.get("id")
             if not request_id:
@@ -707,12 +711,12 @@ async def _scheduled_publish_loop(bot) -> None:
                 if user_id:
                     lang = get_lang(user_id)
                     try:
-                        await bot.send_message(
-                            user_id,
-                            t(notify_key, lang, name=name or "—", version=version or "—"),
-                            parse_mode=ParseMode.HTML,
-                            disable_web_page_preview=True,
-                        )
+                        text = t(notify_key, lang, name=plain_html(name or "—"), version=plain_html(version or "—"))
+                        text = with_author_vote_summary(text, entry, lang)
+                        for part in split_html(text, 3500):
+                            await bot.send_message(
+                                user_id, part, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+                            )
                     except Exception:
                         pass
 
@@ -779,7 +783,7 @@ def delete_requests_by_plugin_id(plugin_id: str) -> int:
 
 
 def cleanup_hidden_requests(visible_statuses: Optional[set[str]] = None) -> int:
-    visible = visible_statuses or {"draft", "pending", "scheduled", "error"}
+    visible = visible_statuses or {"draft", "pending", "scheduled", "approved", "error"}
     removed = 0
     for entry in list(_get_requests_list()):
         if str(entry.get("status") or "") in visible:

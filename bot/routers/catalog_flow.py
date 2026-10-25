@@ -74,7 +74,7 @@ from core.user_store import (
 )
 from core.storage import load_joinly
 from core.storage import save_joinly
-from core.request_store import get_request_by_plugin_id, get_user_requests, update_request_payload
+from core.request_store import get_request_by_id, get_request_by_plugin_id, get_user_requests, request_callback_token, update_request_payload
 from bot.services.moderation import VOTABLE_REQUEST_STATUSES, forum_text_with_votes, vote_counts
 from bot.services.inline import answer_inline
 
@@ -928,6 +928,8 @@ async def on_icon_detail(cb: CallbackQuery, state: FSMContext) -> None:
 
 
 def _pending_kind(req: dict) -> str:
+    if req.get("status") in {"approved", "scheduled"}:
+        return req["status"]
     if req.get("status") == "rework":
         return "rework"
     kind = str(req.get("type") or "new")
@@ -941,7 +943,32 @@ def _pending_name(req: dict) -> str:
 
 
 def _pending_label(req: dict, lang: str) -> str:
+    if req.get("status") == "scheduled":
+        from bot.services.approval import approval_status_text
+
+        return strip_html(approval_status_text(req, lang))
     return t(f"profile_pending_{_pending_kind(req)}", lang)
+
+
+@router.callback_query(F.data.startswith("usr:request:"))
+async def on_profile_request(cb: CallbackQuery, state: FSMContext) -> None:
+    from bot.routers.admin_flow import _render_request_draft
+    from bot.services.approval import approval_status_text
+
+    lang = await get_language(cb, state)
+    entry = get_request_by_id(cb.data.split(":")[2])
+    if not entry or not cb.from_user or (entry.get("payload") or {}).get("user_id") != cb.from_user.id:
+        await cb.answer(t("not_found", lang), show_alert=True)
+        return
+    if entry.get("status") not in {"approved", "scheduled"}:
+        await on_profile(cb, state)
+        return
+    text = approval_status_text(entry, lang) + "\n\n" + _render_request_draft(entry, lang=lang)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+        _btn(t("btn_back", lang), callback_data="profile", icon="back", style="danger"),
+    ]])
+    await answer(cb, text, keyboard, "profile")
+    await ack(cb)
 
 
 @router.callback_query(F.data == "profile")
@@ -958,7 +985,7 @@ async def on_profile(cb: CallbackQuery, state: FSMContext) -> None:
 
     pending = []
     for req in get_user_requests(user.id):
-        if req.get("status") not in {"pending", "rework"}:
+        if req.get("status") not in {"pending", "rework", "approved", "scheduled"}:
             continue
         if req.get("type") not in {"new", "update", "delete"}:
             continue
@@ -1491,6 +1518,8 @@ async def on_my_items(cb: CallbackQuery, state: FSMContext) -> None:
             name = str(plugin.get("name") or req_id).strip() or req_id
             req_type = req.get("type") if isinstance(req, dict) else "new"
             cb_data = f"pendupd:{req_id}" if req_type == "update" else f"pendreq:{req_id}"
+            if isinstance(req, dict) and req.get("status") in {"approved", "scheduled"}:
+                cb_data = f"usr:request:{request_callback_token(req_id)}"
             label = _pending_label(req, lang) if isinstance(req, dict) else ""
             all_items.append((f"{name} — {label}" if label else name, cb_data))
 

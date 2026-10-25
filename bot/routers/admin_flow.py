@@ -12,6 +12,10 @@ from typing import Any, Dict, List, Optional
 from bot.services.plugin_files import send_plugin_document
 from core.plugin_formats import payload_extension
 from bot.services import reason_templates
+from bot.services.approval import (
+    approval_status_text, approve_request, can_approve_request,
+    notify_author_approval, schedule_request,
+)
 from bot.languages import normalize_language, localized_value
 from bot.services.reason_templates import (
     TEMPLATE_CONFIG_KEYS, TEMPLATES_LIMIT, load_reason_templates,
@@ -123,6 +127,7 @@ from bot.services.dialogs import register_dialog_message, has_dialog_media, send
 from bot.services.forum import answer_in_moderation_topic
 from bot.services.moderation import (
     author_reply_kwargs,
+    can_accept_vote,
     delete_forum_request_message,
     is_moderation_forum_chat,
     moderation_config,
@@ -131,6 +136,7 @@ from bot.services.moderation import (
     previous_rounds_text,
     vote_counts,
     vote_summary,
+    with_author_vote_summary,
 )
 from bot.services.submission import prepare_catalog_categories, process_plugin_file
 from core.categories import CATEGORY_KEYS, MAX_CATEGORIES, categories_for, category_fields
@@ -521,6 +527,9 @@ def _author_comment_block(entry: dict, lang: str = "ru") -> str:
 
 def _review_meta_block(entry: dict, lang: str = "ru") -> str:
     parts: list[str] = []
+    approval = approval_status_text(entry, lang)
+    if approval:
+        parts.append(approval)
     not_before = _publish_not_before_dt_utc(entry)
     if not_before:
         dt_str = not_before.astimezone(TZ_UTC_PLUS_5).strftime("%d.%m.%Y %H:%M")
@@ -591,15 +600,13 @@ async def _render_scheduled_view(target: CallbackQuery | Message, state: FSMCont
     if not entry:
         await answer(target, _tr(target, "not_found"), admin_plugins_section_kb(lang=lang, role=_admin_menu_role(target)), "admin")
         return
-    dt = _scheduled_dt_utc(entry)
-    dt_str = dt.astimezone(TZ_UTC_PLUS_5).strftime("%d.%m.%Y %H:%M") if dt else "—"
     meta = _review_meta_block(entry, lang=_lang_for(target))
-    text = f"{_render_request_draft(entry, lang=_lang_for(target))}\n\n<b>Отложено на:</b> <code>{dt_str}</code>"
+    text = _render_request_draft(entry, lang=lang)
     if meta:
         text = f"{text}\n\n{meta}"
     await state.update_data(scheduled_current_request=str(request_id))
     await state.set_state(AdminFlow.menu)
-    await answer(target, text, admin_scheduled_item_kb(str(request_id), lang=lang), "admin")
+    await answer(target, text, admin_scheduled_item_kb(str(request_id), lang=lang, allow_manage=_is_super_admin(target)), "admin")
 
 
 def _scheduled_post_includes_updated_plugins(item: dict) -> bool:
@@ -904,6 +911,7 @@ def _admin_request_counts() -> dict[str, int]:
         "plugin_pending": len(plugin_pending),
         "icon_pending": len(icon_pending),
         "scheduled_plugins": len(scheduled_plugins),
+        "approved_plugins": len([r for r in get_requests(status="approved") if not is_icon(r) and not _is_appeal(r)]),
         "scheduled_posts": _count_future_scheduled_posts(),
     }
 
@@ -1351,7 +1359,10 @@ async def _render_queue(cb: CallbackQuery, state: FSMContext, token: str) -> Non
     page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
     visible_requests = [r for r in (list(get_requests(status="pending")) + list(get_requests(status="error"))) if not _is_appeal(r)]
 
-    if queue_type == "update":
+    if queue_type == "approved":
+        requests = [r for r in get_requests(status="approved") if not _is_appeal(r)
+                    and not (r.get("payload", {}).get("submission_type") == "icon" or r.get("payload", {}).get("icon"))]
+    elif queue_type == "update":
         requests = [
             r for r in visible_requests
             if r.get("type") == "update"
@@ -1370,6 +1381,10 @@ async def _render_queue(cb: CallbackQuery, state: FSMContext, token: str) -> Non
         ]
 
     if not requests:
+        if queue_type == "approved":
+            await state.set_state(AdminFlow.menu)
+            await answer(cb, _tr(cb, "admin_approved_empty"), admin_plugins_section_kb(lang=lang, role=_admin_menu_role(cb)), "admin")
+            return
         await _render_menu(cb, state)
         return
 
@@ -1419,7 +1434,9 @@ async def _render_queue(cb: CallbackQuery, state: FSMContext, token: str) -> Non
         label = f"{prefix}{label}"
         items.append((label, entry["id"], row_icon))
 
-    if queue_type == "update":
+    if queue_type == "approved":
+        title = _tr(cb, "admin_approved_title")
+    elif queue_type == "update":
         title = _tr(cb, "admin_queue_title_updates")
     elif queue_type == "new":
         title = _tr(cb, "admin_queue_title_new")
@@ -1477,7 +1494,8 @@ async def _render_review(cb: CallbackQuery, state: FSMContext, token: str) -> No
             submit_callback=f"adm:delete:{request_id}" if is_delete else None,
             lang=lang,
             allow_publish=_is_super_admin(cb),
-            allow_vote=not is_delete,
+            allow_vote=not is_delete and can_accept_vote(entry),
+            allow_approve=can_approve_request(entry),
             media_count=len(_comment_media_of_entry(entry)),
         ),
         "new",
@@ -1571,6 +1589,8 @@ async def _render_nav_token(cb: CallbackQuery, state: FSMContext, token: str) ->
         parts = token.split(":")
         page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
         await _render_scheduled_posts_list(cb, state, page)
+    elif token.startswith("adm:scheduled:view:"):
+        await _render_scheduled_view(cb, state, token.split(":")[3])
     elif token.startswith("adm:scheduled:"):
         parts = token.split(":")
         page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
@@ -1624,7 +1644,7 @@ def _can_schedule_request(entry: dict | None) -> bool:
     payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
     if payload.get("submission_type") == "icon" or payload.get("icon"):
         return False
-    return req_type not in {"update", "delete"}
+    return req_type == "new"
 
 
 def _validate_request_before_publish(entry: dict | None) -> list[str]:
@@ -2624,21 +2644,131 @@ async def on_admin_scheduled_back(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith("adm:scheduled:view:"))
 async def on_admin_scheduled_view(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
     request_id = cb.data.split(":")[3]
+    await _nav_push(state, f"adm:scheduled:view:{request_id}")
     await _render_scheduled_view(cb, state, request_id)
     await ack(cb)
 
 
-@router.callback_query(F.data.startswith("adm:scheduled:unschedule:"))
-async def on_admin_scheduled_unschedule(cb: CallbackQuery, state: FSMContext) -> None:
-    request_id = cb.data.split(":")[3]
+async def _approval_followups(bot, request_id: str) -> None:
+    from bot.services.moderation import refresh_forum_vote_keyboard
+
     entry = get_request_by_id(request_id)
     if not entry:
+        return
+    results = await asyncio.gather(
+        notify_author_approval(bot, request_id), refresh_forum_vote_keyboard(bot, entry),
+        return_exceptions=True,
+    )
+    for result in results:
+        if isinstance(result, Exception):
+            logger.error("event=moderation.approval_followup_failed request_id=%s", request_id,
+                         exc_info=(type(result), result, result.__traceback__))
+
+
+def _save_plugin_schedule(target, request_id: str, moment: datetime) -> dict | None:
+    if not _is_super_admin(target) or not _acquire_request_lock(request_id):
+        return None
+    try:
+        entry = schedule_request(request_id, moment, _admin_actor_label(target), _actor_id(target))
+        if entry:
+            spawn_background(_approval_followups(target.bot, request_id))
+        return entry
+    finally:
+        _release_request_lock(request_id)
+
+
+def _swap_plugin_schedules(target, first_id: str, second_id: str) -> bool:
+    if not _is_super_admin(target):
+        return False
+    locked = []
+    try:
+        for request_id in sorted({first_id, second_id}):
+            if not _acquire_request_lock(request_id):
+                return False
+            locked.append(request_id)
+        first, second = get_request_by_id(first_id), get_request_by_id(second_id)
+        if not first or not second or first.get("status") != "scheduled" or second.get("status") != "scheduled":
+            return False
+        first_dt, second_dt = _scheduled_dt_utc(first), _scheduled_dt_utc(second)
+        now = datetime.now(timezone.utc)
+        if not first_dt or not second_dt or min(first_dt, second_dt) <= now:
+            return False
+        actor, actor_id = _admin_actor_label(target), _actor_id(target)
+        if not _can_schedule_request(first) or not _can_schedule_request(second):
+            return False
+        schedule_request(first_id, second_dt, actor, actor_id)
+        schedule_request(second_id, first_dt, actor, actor_id)
+        for request_id in locked:
+            spawn_background(_approval_followups(target.bot, request_id))
+        return True
+    finally:
+        for request_id in locked:
+            _release_request_lock(request_id)
+
+
+@router.callback_query(F.data.startswith("adm:approve:"))
+async def on_admin_approve(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    request_id = cb.data.split(":")[2]
+    entry = get_request_by_id(request_id)
+    if not can_approve_request(entry):
+        await cb.answer(_tr(cb, "admin_request_already_handled"), show_alert=True)
+        return
+    if not _acquire_request_lock(request_id):
+        await cb.answer(_tr(cb, "admin_request_processing"), show_alert=True)
+        return
+    try:
+        errors = _validate_request_before_publish(entry)
+        if errors:
+            await cb.answer(_tr(cb, "admin_has_errors"), show_alert=True)
+            await answer(cb, _tr(cb, "admin_publish_stopped", errors="\n".join(plain_html(value) for value in errors)), admin_cancel_kb(_lang_for(cb)), "admin")
+            return
+        if not approve_request(request_id, _admin_actor_label(cb), _actor_id(cb)):
+            await cb.answer(_tr(cb, "admin_request_already_handled"), show_alert=True)
+            return
+    finally:
+        _release_request_lock(request_id)
+    spawn_background(_approval_followups(cb.bot, request_id))
+    await _reset_menu_navigation(state)
+    await _nav_push(state, "adm:section:plugins")
+    await _nav_push(state, "adm:queue:approved:0")
+    await _render_queue(cb, state, "adm:queue:approved:0")
+    await ack(cb, _tr(cb, "admin_request_approved"))
+
+
+@router.callback_query(F.data.startswith("adm:scheduled:unschedule:"))
+async def on_admin_scheduled_unschedule(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    request_id = cb.data.split(":")[3]
+    entry = get_request_by_id(request_id)
+    if not entry or entry.get("status") != "scheduled":
         await cb.answer(_tr(cb, "not_found"), show_alert=True)
         return
 
-    update_request_payload(request_id, {"scheduled_at": None})
-    update_request_status(request_id, "pending")
+    if not _acquire_request_lock(request_id):
+        await cb.answer(_tr(cb, "admin_request_processing"), show_alert=True)
+        return
+    try:
+        payload = entry.get("payload") or {}
+        update_request_payload(request_id, {
+            "scheduled_at": None, "moderation_pending_votes": {},
+            "approved_at": payload.get("approved_at") or datetime.now(timezone.utc).isoformat(),
+            "approved_by": payload.get("approved_by") or _admin_actor_label(cb),
+            "approved_by_id": payload.get("approved_by_id") or _actor_id(cb),
+        })
+        update_request_status(request_id, "approved", actor=_admin_actor_label(cb), actor_id=_actor_id(cb))
+        add_audit_event("moderation.request_unscheduled", actor=_admin_actor_label(cb), actor_id=_actor_id(cb), request_id=request_id)
+    finally:
+        _release_request_lock(request_id)
+    spawn_background(_approval_followups(cb.bot, request_id))
     data = await state.get_data()
     page = data.get("scheduled_list_page")
     if not isinstance(page, int):
@@ -2677,8 +2807,9 @@ async def on_admin_scheduled_up(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer(_tr(cb, "not_found"), show_alert=True)
         return
 
-    update_request_payload(request_id, {"scheduled_at": prev_dt.isoformat()})
-    update_request_payload(prev_id, {"scheduled_at": cur_dt.isoformat()})
+    if not _swap_plugin_schedules(cb, request_id, prev_id):
+        await cb.answer(_tr(cb, "admin_request_already_handled"), show_alert=True)
+        return
     await ack(cb)
     await on_admin_scheduled_view(cb, state)
 
@@ -2713,8 +2844,9 @@ async def on_admin_scheduled_down(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer(_tr(cb, "not_found"), show_alert=True)
         return
 
-    update_request_payload(request_id, {"scheduled_at": next_dt.isoformat()})
-    update_request_payload(next_id, {"scheduled_at": cur_dt.isoformat()})
+    if not _swap_plugin_schedules(cb, request_id, next_id):
+        await cb.answer(_tr(cb, "admin_request_already_handled"), show_alert=True)
+        return
     await ack(cb)
     await on_admin_scheduled_view(cb, state)
 
@@ -2765,7 +2897,9 @@ async def on_admin_scheduled_change_time_value(message: Message, state: FSMConte
         return
 
     schedule_dt_utc = schedule_dt_local.astimezone(timezone.utc)
-    update_request_payload(request_id, {"scheduled_at": schedule_dt_utc.isoformat()})
+    if not _save_plugin_schedule(message, request_id, schedule_dt_utc):
+        await message.answer(_tr(message, "admin_request_already_handled"))
+        return
     await state.set_state(AdminFlow.menu)
     await _render_scheduled_view(message, state, request_id)
 
@@ -2804,7 +2938,9 @@ async def on_admin_scheduled_change_preset(cb: CallbackQuery, state: FSMContext)
         return
 
     schedule_dt_utc = schedule_dt_local.astimezone(timezone.utc)
-    update_request_payload(request_id, {"scheduled_at": schedule_dt_utc.isoformat()})
+    if not _save_plugin_schedule(cb, request_id, schedule_dt_utc):
+        await cb.answer(_tr(cb, "admin_request_already_handled"), show_alert=True)
+        return
     await state.set_state(AdminFlow.menu)
     await ack(cb)
     await on_admin_scheduled_view(cb, state)
@@ -3074,9 +3210,10 @@ async def on_admin_section_plugins(cb: CallbackQuery, state: FSMContext) -> None
 
 _REJECTED_PER_PAGE = 8
 
-_AUDIT_FILTERS = ("all", "published", "rejected", "pending", "rework", "scheduled")
+_AUDIT_FILTERS = ("all", "published", "rejected", "pending", "rework", "scheduled", "approved")
 
 _STATUS_ICONS = {
+    "approved": "yes",
     "published": "yes",
     "rejected": "no",
     "pending": "clock",
@@ -3474,6 +3611,9 @@ async def on_admin_post_send_updates(cb: CallbackQuery, state: FSMContext) -> No
 @router.callback_query(F.data == "adm:schedule")
 async def on_admin_plugin_schedule(cb: CallbackQuery, state: FSMContext) -> None:
     lang = _lang_for(cb)
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
     data = await state.get_data()
     request_id = data.get("current_request")
     if not request_id:
@@ -3511,8 +3651,9 @@ async def _apply_plugin_schedule(target, state: FSMContext, schedule_dt_local: d
         return
 
     try:
-        update_request_payload(request_id, {"scheduled_at": schedule_dt_local.astimezone(timezone.utc).isoformat()})
-        update_request_status(request_id, "scheduled")
+        if not _save_plugin_schedule(target, request_id, schedule_dt_local):
+            await answer(target, _tr(target, "admin_request_already_handled"), admin_cancel_kb(lang), "admin")
+            return
         await state.set_state(AdminFlow.menu)
         await _reset_menu_navigation(state)
         await answer(
@@ -4840,7 +4981,10 @@ async def on_admin_queue(cb: CallbackQuery, state: FSMContext) -> None:
 
     visible_requests = [r for r in (list(get_requests(status="pending")) + list(get_requests(status="error"))) if not _is_appeal(r)]
 
-    if queue_type == "update":
+    if queue_type == "approved":
+        requests = [r for r in get_requests(status="approved") if not _is_appeal(r)
+                    and not (r.get("payload", {}).get("submission_type") == "icon" or r.get("payload", {}).get("icon"))]
+    elif queue_type == "update":
         requests = [
             r for r in visible_requests
             if r.get("type") == "update"
@@ -4859,6 +5003,11 @@ async def on_admin_queue(cb: CallbackQuery, state: FSMContext) -> None:
         ]
 
     if not requests:
+        if queue_type == "approved":
+            await state.set_state(AdminFlow.menu)
+            await answer(cb, _tr(cb, "admin_approved_empty"), admin_plugins_section_kb(lang=lang, role=_admin_menu_role(cb)), "admin")
+            await ack(cb)
+            return
         await cb.answer(_tr(cb, "admin_queue_empty"), show_alert=True)
         return
 
@@ -4909,7 +5058,9 @@ async def on_admin_queue(cb: CallbackQuery, state: FSMContext) -> None:
         label = f"{prefix}{label}"
         items.append((label, entry["id"], row_icon))
 
-    if queue_type == "update":
+    if queue_type == "approved":
+        title = _tr(cb, "admin_approved_title")
+    elif queue_type == "update":
         title = _tr(cb, "admin_queue_title_updates")
     elif queue_type == "new":
         title = _tr(cb, "admin_queue_title_new")
@@ -5635,6 +5786,7 @@ async def on_admin_review(cb: CallbackQuery, state: FSMContext) -> None:
         )
     else:
         kb = admin_review_kb(request_id, user_id, lang=lang, allow_publish=allow_publish,
+                             allow_approve=can_approve_request(entry), allow_vote=can_accept_vote(entry),
                              media_count=len(_comment_media_of_entry(entry)))
 
     if request_type in {"update", "delete"} or submission_type == "icon":
@@ -5696,6 +5848,7 @@ async def on_admin_back_review(cb: CallbackQuery, state: FSMContext) -> None:
         )
     else:
         kb = admin_review_kb(request_id, user_id, lang=lang, allow_publish=_is_super_admin(cb),
+                             allow_approve=can_approve_request(entry), allow_vote=can_accept_vote(entry),
                              media_count=len(_comment_media_of_entry(entry)))
 
     await cb.message.edit_reply_markup(reply_markup=kb)
@@ -6433,13 +6586,15 @@ async def _finish_publish_notifications(bot, entry: dict, notify_key: str, actor
         if not user_id:
             return
         plugin = payload.get("plugin") or payload.get("icon") or {}
-        await bot.send_message(
-            user_id,
-            t(notify_key, get_lang(user_id), name=plain_html(plugin.get("name") or "—"),
-              version=plain_html(plugin.get("version") or "—")),
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
-        )
+        lang = get_lang(user_id)
+        text = t(notify_key, lang, name=plain_html(plugin.get("name") or "—"),
+                 version=plain_html(plugin.get("version") or "—"))
+        if notify_key in {"notify_published", "notify_update_published", "notify_icon_published"}:
+            text = with_author_vote_summary(text, entry, lang)
+        for part in split_html(text, 3500):
+            await bot.send_message(
+                user_id, part, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+            )
 
     calls = [
         ("admin_notifications", finalize_admin_notify_messages(bot, entry, "Заявка была принята", actor)),
@@ -6506,20 +6661,12 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
         and not_before
         and not_before > datetime.now(timezone.utc)
     ):
-        update_request_payload(request_id, {"scheduled_at": not_before.isoformat()})
-        update_request_status(request_id, "scheduled")
+        if not schedule_request(request_id, not_before, _admin_actor_label(cb), _actor_id(cb)):
+            _release_request_lock(request_id)
+            await cb.answer(_tr(cb, "admin_request_already_handled"), show_alert=True)
+            return
+        spawn_background(_approval_followups(cb.bot, request_id))
         dt_str = not_before.astimezone(TZ_UTC_PLUS_5).strftime("%d.%m.%Y %H:%M")
-        user_id = entry.get("payload", {}).get("user_id")
-        if user_id:
-            try:
-                await cb.bot.send_message(
-                    user_id,
-                    _tr(user_id, "admin_request_scheduled_by_limit", datetime=dt_str),
-                    parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True,
-                )
-            except Exception:
-                pass
         await _reset_menu_navigation(state)
         await answer(
             cb,
@@ -7768,9 +7915,16 @@ _AUDIT_LABELS = {
 }
 
 
-def _audit_line(event: dict) -> str:
+def _audit_line(event: dict, lang: str = "ru") -> str:
     stamp = str(event.get("created_at") or "")[:16].replace("T", " ")
     name = _AUDIT_LABELS.get(str(event.get("event")), str(event.get("event") or "—"))
+    approval_label = {
+        "moderation.request_approved": "request_status_approved",
+        "moderation.request_scheduled": "request_status_scheduled",
+        "moderation.request_unscheduled": "btn_unschedule",
+    }.get(str(event.get("event")))
+    if approval_label:
+        name = t(approval_label, lang)
     actor = str(event.get("actor") or "").strip()
     req = str(event.get("request_id") or "").strip()
     parts = [f"<code>{plain_html(stamp)}</code>", name]
@@ -7797,7 +7951,7 @@ async def _render_audit_log(target, state: FSMContext, page: int) -> None:
         text = _tr(
             target, "admin_audit_log_title",
             current=page + 1, total=total_pages, count=total,
-            events="\n\n".join(_audit_line(e) for e in events),
+            events="\n\n".join(_audit_line(e, lang) for e in events),
         )
     await state.set_state(AdminFlow.menu)
     await answer(target, text, admin_audit_log_kb(page, total_pages, lang=lang), "admin")
@@ -8140,6 +8294,8 @@ async def on_admin_request_file_upload(message: Message, state: FSMContext) -> N
             payload.get("user_id", 0),
             lang=_lang_for(message),
             allow_publish=_is_super_admin(message),
+            allow_approve=can_approve_request(entry),
+            allow_vote=can_accept_vote(entry),
             media_count=len(_comment_media_of_entry(entry)),
         ),
         "update" if entry.get("type") == "update" else "new",

@@ -115,7 +115,7 @@ def check_duplicate_pending(
 ) -> Tuple[bool, Optional[str]]:
     from core.request_store import get_requests
 
-    pending = get_requests(status="pending") + get_requests(status="draft")
+    pending = [req for status in ("pending", "draft", "approved", "scheduled") for req in get_requests(status=status)]
 
     slug = make_slug(plugin_name)
     target_id = (plugin_id or "").lower()

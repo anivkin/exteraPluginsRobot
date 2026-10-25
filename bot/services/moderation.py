@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 
 def _forum_reply_markup(entry: dict | None, request_id: str, yes: int, no: int):
+    if isinstance(entry, dict) and entry.get("status") == "approved":
+        return None
     if isinstance(entry, dict) and entry.get("type") == "unban_appeal":
         return moderation_appeal_kb(request_id, yes, no)
     if isinstance(entry, dict) and entry.get("type") == "delete":
@@ -153,6 +155,16 @@ def vote_summary(entry: dict | None, lang: str = "ru") -> str:
     return _format_votes_block(votes if isinstance(votes, dict) else {}, lang=lang)
 
 
+def with_author_vote_summary(text: str, entry: dict | None, lang: str = "ru") -> str:
+    from bot.texts import t
+
+    if not vote_counts(entry)[2] or not send_reasons_to_author_default():
+        return text
+    payload = entry.get("payload") or {}
+    summary = _format_votes_block(payload["moderation_votes"], t("author_moderation_reasons_label", lang), lang)
+    return text + "\n\n" + summary
+
+
 def previous_rounds_text(entry: dict | None, lang: str = "ru") -> str:
     from bot.texts import t
 
@@ -204,6 +216,10 @@ def forum_text_with_votes(entry: dict | None) -> str:
         base = f"<b>Заявка:</b> {telegram_html(request_title(entry))}"
 
     parts = [base]
+    if isinstance(entry, dict) and entry.get("status") in {"approved", "scheduled"}:
+        from bot.services.approval import approval_status_text
+
+        parts.append(approval_status_text(entry, "ru"))
     archive = archive_context(payload.get("plugin") or {}) if isinstance(payload, dict) else ""
     if archive and archive not in base:
         parts.append(archive)

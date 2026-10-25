@@ -8,7 +8,7 @@ from core.request_store import get_all_requests
 from core.storage import load_stats, save_stats
 
 WEEK_TIMEZONE = timezone(timedelta(hours=5))
-DECISION_STATUSES = frozenset({"published", "rejected", "rework", "deleted"})
+DECISION_STATUSES = frozenset({"published", "rejected", "rework", "deleted", "approved"})
 _activity_events: list | None = None
 _activity_index: dict[str, int] = {}
 
