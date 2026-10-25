@@ -2,14 +2,17 @@ from __future__ import annotations
 
 from bot.services.plugin_files import send_plugin_document
 
+import asyncio
 import html
 import logging
+from copy import deepcopy
+from time import monotonic
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramForbiddenError
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
 from bot.cache import (
     get_admins_icons,
@@ -19,7 +22,7 @@ from bot.cache import (
     invalidate,
 )
 from bot.context import get_lang
-from bot.helpers import blank_and_delete, link_preview_options
+from bot.helpers import blank_and_delete, link_preview_options, message_is_too_old
 from bot.keyboards import admin_appeal_decision_kb, admin_review_kb
 from bot.services.moderation import (
     forum_text_with_votes,
@@ -29,10 +32,28 @@ from bot.services.moderation import (
     vote_summary,
 )
 from bot.texts import t
-from core.request_store import update_request_payload
+from core.request_store import get_request_by_id, update_request_payload
 from core.storage import save_config
 
 logger = logging.getLogger(__name__)
+_unreachable_until: dict[tuple[int, int], float] = {}
+
+
+def clear_notification_failure(bot, chat_id: int) -> None:
+    _unreachable_until.pop((getattr(bot, "id", 0), int(chat_id)), None)
+
+
+def _notification_unreachable(bot, chat_id: int, exc: BaseException | None = None) -> bool:
+    key = (getattr(bot, "id", 0), int(chat_id))
+    if exc is not None and is_unreachable_chat(exc):
+        _unreachable_until[key] = monotonic() + 300
+        if len(_unreachable_until) > 512:
+            _unreachable_until.pop(next(iter(_unreachable_until)))
+        return True
+    if _unreachable_until.get(key, 0) > monotonic():
+        return True
+    _unreachable_until.pop(key, None)
+    return False
 
 NOTIFICATION_PREF_LABEL_KEYS: dict[str, str] = {
     "new_plugins": "admin_notify_pref_new_plugins",
@@ -74,6 +95,8 @@ async def notify_admins_event(bot, event: str, text: str) -> int:
     for admin_id in get_admins_super():
         if not admin_notification_enabled(int(admin_id), event):
             continue
+        if _notification_unreachable(bot, admin_id):
+            continue
         try:
             await bot.send_message(
                 int(admin_id), text,
@@ -81,8 +104,11 @@ async def notify_admins_event(bot, event: str, text: str) -> int:
                 disable_web_page_preview=True,
             )
             sent += 1
-        except Exception:
-            logger.exception("event=admin_notify.failed admin=%s type=%s", admin_id, event)
+        except Exception as exc:
+            if _notification_unreachable(bot, admin_id, exc):
+                logger.info("event=admin_notify.unreachable admin=%s type=%s", admin_id, event)
+            else:
+                logger.exception("event=admin_notify.failed admin=%s type=%s", admin_id, event)
     return sent
 
 
@@ -152,10 +178,10 @@ _UNREACHABLE_MARKERS = (
 
 
 def is_unreachable_chat(exc: BaseException) -> bool:
-    if not isinstance(exc, TelegramForbiddenError):
+    if not isinstance(exc, (TelegramForbiddenError, TelegramBadRequest)):
         return False
     text = str(exc).lower()
-    return any(marker in text for marker in _UNREACHABLE_MARKERS)
+    return any(marker in text for marker in (*_UNREACHABLE_MARKERS, "chat not found"))
 
 
 def _comment_media_count(entry: dict[str, Any] | None) -> int:
@@ -168,6 +194,8 @@ def _comment_media_count(entry: dict[str, Any] | None) -> int:
 
 
 async def send_review_notification(bot, chat_id: int, entry: dict[str, Any], text: str, file_path: str | None) -> None:
+    if _notification_unreachable(bot, chat_id):
+        return
     request_id = str(entry.get("id") or "")
     payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
     if payload.get("moderation_forum_text"):
@@ -206,6 +234,7 @@ async def send_review_notification(bot, chat_id: int, entry: dict[str, Any], tex
                 bot,
                 chat_id,
                 {**(entry.get("payload", {}).get("plugin") or {}), "file_path": file_path},
+                file_id=payload.get("moderation_file_id"),
                 reply_to_message_id=msg.message_id,
                 allow_sending_without_reply=True,
                 disable_notification=True,
@@ -218,6 +247,7 @@ async def send_review_notification(bot, chat_id: int, entry: dict[str, Any], tex
             "chat_id": int(chat_id),
             "kind": "text",
             "message_id": int(msg.message_id),
+            "sent_at": datetime.now(timezone.utc).isoformat(),
         }
         if file_msg:
             info["file_message_id"] = int(file_msg.message_id)
@@ -236,7 +266,7 @@ async def send_review_notification(bot, chat_id: int, entry: dict[str, Any], tex
                     message_id,
                     exc_info=True,
                 )
-        if is_unreachable_chat(exc):
+        if _notification_unreachable(bot, chat_id, exc):
             logger.warning(
                 "event=submission.notify_review_target.unreachable request_id=%s chat_id=%s reason=%s",
                 request_id, chat_id, str(exc).split(" - ")[-1],
@@ -350,19 +380,25 @@ async def finalize_admin_notify_messages(
         else False
     )
 
-    for chat_id_str, info in mapping.items():
+    mapping = deepcopy(mapping)
+    semaphore = asyncio.Semaphore(4)
+
+    async def finalize(chat_id_str, info):
         try:
             fallback_chat_id = int(chat_id_str)
         except Exception:
-            continue
+            return
         if not isinstance(info, dict):
-            continue
-        chat_id = int(info.get("chat_id") or fallback_chat_id)
+            return
+        try:
+            chat_id = int(info.get("chat_id") or fallback_chat_id)
+        except (TypeError, ValueError):
+            return
         kind = info.get("kind")
         msg_id = info.get("message_id")
         if not msg_id:
-            continue
-        if delete_on_decision:
+            return
+        if delete_on_decision and not message_is_too_old(info.get("sent_at") or entry.get("submitted_at")):
             for key in ("file_message_id", "message_id"):
                 try:
                     message_id = int(info.get(key) or 0)
@@ -371,10 +407,10 @@ async def finalize_admin_notify_messages(
                 if not message_id:
                     continue
                 try:
-                    await blank_and_delete(bot, chat_id, message_id)
+                    await blank_and_delete(bot, chat_id, message_id, is_media=key == "file_message_id" or kind == "document")
                 except Exception:
                     pass
-            continue
+            return
         try:
             if kind == "document":
                 await bot.edit_message_caption(
@@ -396,10 +432,15 @@ async def finalize_admin_notify_messages(
         except Exception:
             pass
 
-    try:
+    async def limited(chat_id_str, info):
+        async with semaphore:
+            await finalize(chat_id_str, info)
+
+    await asyncio.gather(*(limited(key, value) for key, value in mapping.items()))
+
+    current = get_request_by_id(request_id)
+    if current and (current.get("payload") or {}).get("admin_notify_messages") == mapping:
         update_request_payload(request_id, {"admin_notify_messages": {}})
-    except Exception:
-        pass
 
 
 async def notify_superadmins_if_threshold(bot, entry: dict) -> None:
@@ -435,6 +476,8 @@ async def notify_superadmins_if_threshold(bot, entry: dict) -> None:
     for admin_id in get_admins_super():
         if not admin_notification_enabled(int(admin_id), "threshold"):
             continue
+        if _notification_unreachable(bot, admin_id):
+            continue
         try:
             reply_markup = (
                 admin_appeal_decision_kb(request_id, lang=get_lang(admin_id))
@@ -458,7 +501,8 @@ async def notify_superadmins_if_threshold(bot, entry: dict) -> None:
                 reply_markup=reply_markup,
             )
             delivered += 1
-        except Exception:
+        except Exception as exc:
+            _notification_unreachable(bot, admin_id, exc)
             continue
     if delivered:
         update_request_payload(

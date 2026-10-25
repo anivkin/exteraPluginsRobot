@@ -550,28 +550,27 @@ def profile_kb(
 def admin_menu_kb(role: str | None = None, lang: str = "ru") -> InlineKeyboardMarkup:
     is_super = role == "super"
     rows = [
-        [_btn(t("admin_btn_plugins", lang), callback_data="adm:section:plugins", icon="plugin")],
         [
+            _btn(t("admin_btn_plugins", lang), callback_data="adm:section:plugins", icon="plugin"),
             _btn(t("poster_btn", lang), callback_data="pstr:admin", icon="send"),
-            _btn(t("admin_btn_my_notifications", lang), callback_data="adm:notifs", icon="bell"),
         ],
-        [_btn(t("admin_btn_config", lang), callback_data="adm:config", icon="settings")],
     ]
     if is_super:
         rows.append([
             _btn(t("admin_btn_broadcast", lang), callback_data="adm:broadcast", icon="broadcast"),
             _btn(t("admin_btn_stats", lang), callback_data="adm:stats", icon="stats"),
         ])
-        rows.append([
-            _btn(t("admin_btn_banned", lang), callback_data="adm:banned:0", icon="ban"),
-        ])
+    rows.append([_btn(t("admin_btn_config", lang), callback_data="adm:config", icon="settings")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def admin_stats_kb(role: str | None = None, lang: str = "ru") -> InlineKeyboardMarkup:
     rows = []
     if role == "super":
-        rows.append([_btn(t("admin_btn_moderation_stats", lang), callback_data="adm:modstats:current", icon="vote")])
+        rows.append([
+            _btn(t("admin_btn_moderation_stats", lang), callback_data="adm:modstats:current", icon="vote"),
+            _btn(t("admin_btn_banned", lang), callback_data="adm:banned:0", icon="ban"),
+        ])
     rows.append([_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -632,7 +631,7 @@ def admin_quiz_item_kb(question_id: str, lang: str = "ru", edit_lang: str = "ru"
         [_btn(t("admin_quiz_btn_text", lang), callback_data=f"adm:quiz:edit_text:{question_id}", icon="edit")],
         [_btn(t("admin_quiz_btn_options", lang), callback_data=f"adm:quiz:edit_options:{question_id}", icon="edit")],
         [_btn(t("btn_delete", lang), callback_data=f"adm:quiz:del:{question_id}", icon="delete", style="danger")],
-        [_btn(t("btn_back", lang), callback_data="adm:quiz:0", style="danger", icon="back")],
+        [_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")],
     ])
 
 
@@ -664,16 +663,15 @@ def admin_backup_recipients_kb(recipient_ids: List[int], lang: str = "ru") -> In
 
 def admin_maintenance_kb(lang: str = "ru") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [_btn(t("admin_btn_backup", lang), callback_data="adm:backup", icon="download")],
+        [
+            _btn(t("admin_btn_backup", lang), callback_data="adm:backup", icon="download"),
+            _btn(t("admin_btn_audit_log", lang), callback_data="adm:auditlog:0", icon="file"),
+        ],
         [_btn(t("admin_btn_publish_examples", lang), callback_data="adm:examples:publish", icon="art")],
-        [
-            _btn(t("admin_maint_health", lang), callback_data="adm:maint:health", icon="stats"),
-            _btn(t("admin_maint_sync_version", lang), callback_data="adm:maint:sync_version", icon="updates"),
-        ],
-        [
-            _btn(t("admin_maint_sync_catalog", lang), callback_data="adm:maint:sync_catalog", icon="link"),
-            _btn(t("admin_maint_erase_id", lang), callback_data="adm:maint:erase_id", icon="delete"),
-        ],
+        [_btn(t("admin_maint_health", lang), callback_data="adm:maint:health", icon="stats")],
+        [_btn(t("admin_maint_sync_version", lang), callback_data="adm:maint:sync_version", icon="updates")],
+        [_btn(t("admin_maint_sync_catalog", lang), callback_data="adm:maint:sync_catalog", icon="link")],
+        [_btn(t("admin_maint_erase_id", lang), callback_data="adm:maint:erase_id", icon="delete")],
         [_btn(t("admin_maint_erase_hidden", lang), callback_data="adm:maint:erase", icon="delete", style="danger")],
         [_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")],
     ])
@@ -707,7 +705,7 @@ def admin_source_detail_kb(source_id: str, lang: str = "ru") -> InlineKeyboardMa
     return InlineKeyboardMarkup(inline_keyboard=[
         [_btn(t("admin_source_attach", lang), callback_data=f"adm:source:{source_id}:attach", icon="link")],
         [_btn(t("admin_source_delete", lang), callback_data=f"adm:source:{source_id}:del", icon="delete", style="danger")],
-        [_btn(t("btn_back", lang), callback_data="adm:sources", style="danger", icon="back")],
+        [_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")],
     ])
 
 
@@ -839,7 +837,7 @@ def admin_rejected_kb(
         nav.append(_btn(">", callback_data=f"adm:audit:{status}:{page+1}", icon="forward"))
     if nav:
         rows.append(nav)
-    rows.append([_btn(t("btn_back", lang), callback_data="adm:section:plugins", style="danger", icon="back")])
+    rows.append([_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -847,7 +845,7 @@ def admin_rejected_detail_kb(request_id: str, lang: str = "ru") -> InlineKeyboar
     return InlineKeyboardMarkup(inline_keyboard=[
         [_btn(t("admin_rej_review", lang), callback_data=f"adm:review:{request_callback_token(request_id)}", icon="edit", style="success")],
         [_btn(t("admin_rej_delete", lang), callback_data=f"adm:rejdel:{request_callback_token(request_id)}", icon="delete", style="danger")],
-        [_btn(t("btn_back", lang), callback_data="adm:audit:0", style="danger", icon="back")],
+        [_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")],
     ])
 
 
@@ -882,10 +880,12 @@ def admin_post_section_kb(lang: str = "ru") -> InlineKeyboardMarkup:
 
 
 def admin_config_kb(lang: str = "ru", role: str | None = "super") -> InlineKeyboardMarkup:
-    rows = [[_btn(t("admin_btn_vote_settings", lang), callback_data="adm:vote_prefs", icon="vote")]]
+    rows = [[
+        _btn(t("admin_btn_vote_settings", lang), callback_data="adm:vote_prefs", icon="vote"),
+        _btn(t("admin_btn_my_notifications", lang), callback_data="adm:notifs", icon="bell"),
+    ]]
     if role == "super":
         rows.extend([
-            [_btn(t("admin_btn_quiz", lang), callback_data="adm:quiz:0", icon="requests")],
             [
                 _btn(t("admin_cfg_section_admins", lang), callback_data="adm:config_section:admins", icon="admin"),
                 _btn(t("admin_cfg_section_channels", lang), callback_data="adm:config_section:channels", icon="broadcast"),
@@ -898,7 +898,6 @@ def admin_config_kb(lang: str = "ru", role: str | None = "super") -> InlineKeybo
                 _btn(t("admin_btn_sources", lang), callback_data="adm:sources", icon="link"),
                 _btn(t("admin_btn_maintenance", lang), callback_data="adm:maint", icon="settings"),
             ],
-            [_btn(t("admin_btn_audit_log", lang), callback_data="adm:auditlog:0", icon="file")],
         ])
     rows.append([_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -933,6 +932,10 @@ def admin_config_channels_kb(lang: str = "ru") -> InlineKeyboardMarkup:
 def admin_config_moderation_kb(lang: str = "ru") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
+            _btn(t("admin_btn_quiz", lang), callback_data="adm:quiz:0", icon="requests"),
+            _btn(t("admin_cfg_reject_templates", lang), callback_data="adm:rejtpl_cfg:reject", icon="file"),
+        ],
+        [
             _btn(t("admin_cfg_moderation_forum_chat_id", lang), callback_data="adm:config:moderation.forum_chat_id", icon="requests"),
             _btn(t("admin_cfg_moderation_forum_topic_id", lang), callback_data="adm:config:moderation.forum_topic_id", icon="file"),
         ],
@@ -940,13 +943,10 @@ def admin_config_moderation_kb(lang: str = "ru") -> InlineKeyboardMarkup:
             _btn(t("admin_cfg_moderation_vote_threshold", lang), callback_data="adm:config:moderation.vote_threshold", icon="vote"),
             _btn(t("admin_cfg_moderation_notification_chat_ids", lang), callback_data="adm:config:moderation.notification_chat_ids", icon="bell"),
         ],
-        [
-            _btn(t("admin_cfg_reject_templates", lang), callback_data="adm:rejtpl_cfg:reject", icon="file"),
-            _btn(t("admin_cfg_moderation_delete_review_notifications_on_decision", lang), callback_data="adm:config:moderation.delete_review_notifications_on_decision", icon="delete"),
-        ],
         [_btn(t("admin_cfg_moderation_min_supported_version", lang), callback_data="adm:config:moderation.min_supported_version", icon="updates")],
         [_btn(t("admin_cfg_moderation_require_vote_reason", lang), callback_data="adm:config:moderation.require_vote_reason", icon="vote")],
         [_btn(t("admin_cfg_moderation_send_reasons_to_author", lang), callback_data="adm:config:moderation.send_reasons_to_author", icon="send")],
+        [_btn(t("admin_cfg_moderation_delete_review_notifications_on_decision", lang), callback_data="adm:config:moderation.delete_review_notifications_on_decision", icon="delete")],
         [_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")],
     ])
 
@@ -987,6 +987,7 @@ def admin_broadcast_kind_kb(lang: str = "ru") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [_btn(t("admin_broadcast_all", lang), callback_data="adm:broadcast:all", icon="broadcast")],
         [_btn(t("admin_broadcast_moderation", lang), callback_data="adm:broadcast:moderation", icon="admin")],
+        [_btn(t("admin_broadcast_history", lang), callback_data="adm:broadcast_history:0", icon="clock")],
         [_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")],
     ])
 
@@ -994,7 +995,24 @@ def admin_broadcast_kind_kb(lang: str = "ru") -> InlineKeyboardMarkup:
 def admin_broadcast_progress_kb(lang: str = "ru") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [_btn(t("btn_refresh", lang), callback_data="adm:broadcast:progress", icon="updates")],
+        [_btn(t("admin_broadcast_history", lang), callback_data="adm:broadcast_history:0", icon="clock")],
+        [_btn(t("btn_back", lang), callback_data="adm:cancel", icon="back")],
     ])
+
+
+def admin_broadcast_history_kb(items: list[tuple[str, str]], page: int, total_pages: int,
+                               lang: str = "ru") -> InlineKeyboardMarkup:
+    rows = [[_btn(label, callback_data=f"adm:broadcast_run:{run_id}", icon="broadcast")]
+            for run_id, label in items]
+    navigation = []
+    if page > 0:
+        navigation.append(_btn("<", callback_data=f"adm:broadcast_history:{page - 1}", icon="back"))
+    if page + 1 < total_pages:
+        navigation.append(_btn(">", callback_data=f"adm:broadcast_history:{page + 1}", icon="forward"))
+    if navigation:
+        rows.append(navigation)
+    rows.append([_btn(t("btn_back", lang), callback_data="adm:cancel", icon="back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def admin_post_confirm_kb(lang: str = "ru") -> InlineKeyboardMarkup:
@@ -1076,7 +1094,7 @@ def admin_rejected_appeals_kb(items: List[Tuple[str, str] | Tuple[str, str, str]
         nav.append(_btn(">", callback_data=f"adm:rejapp:{page+1}", icon="forward"))
     if nav:
         rows.append(nav)
-    rows.append([_btn(t("btn_back", lang), callback_data="adm:banned:0", style="danger", icon="back")])
+    rows.append([_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -1084,7 +1102,7 @@ def admin_rejected_appeal_detail_kb(request_id: str, lang: str = "ru") -> Inline
     return InlineKeyboardMarkup(inline_keyboard=[
         [_btn(t("kb_appeal_unban", lang), callback_data=f"adm:appunb:{request_callback_token(request_id)}", icon="yes", style="success")],
         [_btn(t("admin_rej_delete", lang), callback_data=f"adm:appdel:{request_callback_token(request_id)}", icon="delete", style="danger")],
-        [_btn(t("btn_back", lang), callback_data="adm:rejapp:0", style="danger", icon="back")],
+        [_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")],
     ])
 
 
@@ -1405,7 +1423,7 @@ def admin_audit_log_kb(page: int, total_pages: int, lang: str = "ru") -> InlineK
     if page < total_pages - 1:
         nav.append(_btn(">", callback_data=f"adm:auditlog:{page+1}", icon="forward"))
     rows = [nav] if nav else []
-    rows.append([_btn(t("btn_back", lang), callback_data="adm:config", style="danger", icon="back")])
+    rows.append([_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -1414,5 +1432,5 @@ def admin_blocklist_kb(items: List[str], lang: str = "ru") -> InlineKeyboardMark
         [_btn(pid, callback_data=f"adm:unblock:{pid}", icon="ban", style="danger")]
         for pid in items[:40]
     ]
-    rows.append([_btn(t("btn_back", lang), callback_data="adm:config", style="danger", icon="back")])
+    rows.append([_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

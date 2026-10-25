@@ -251,10 +251,10 @@ async def _render_vote_templates(message: Message, state: FSMContext, request_id
     mode = moderation_preferences(user_id)["template_input"]
     moderator = user_mention(user_id, str(item.get("username") or ""))
     text = t("vote_reason_pick_tpl", lang, moderator=moderator) + "\n" + body
-    text += "\n" + t("reason_templates_page", lang, page=page + 1, total=total)
-    text += "\n" + t(f"vote_reason_template_hint_{mode}", lang)
+    text += "\n\n" + t("reason_templates_page", lang, page=page + 1, total=total)
     if selected:
         text += "\n" + t("reason_templates_selected", lang, numbers=", ".join(str(index + 1) for index in selected))
+    text += "\n\n" + t(f"vote_reason_template_hint_{mode}", lang)
     update_pending_vote(request_id, user_id, reason_in_progress=True, reason_mode="templates", template_page=page)
     await state.set_state(UserFlow.choosing_moderation_vote_templates)
     await state.update_data(moderation_vote_request_id=request_id,

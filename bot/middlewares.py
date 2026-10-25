@@ -98,6 +98,10 @@ class CommandStateResetMiddleware(BaseMiddleware):
         data: dict[str, Any],
     ) -> Any:
         if isinstance(event, Message):
+            if event.chat.type == "private" and event.from_user and data.get("bot"):
+                from bot.services.admin_notifications import clear_notification_failure
+
+                clear_notification_failure(data["bot"], event.from_user.id)
             raw = event.text or event.caption
             command = parse_command(raw)
             joinly_input = False
@@ -148,7 +152,7 @@ class CommandStateResetMiddleware(BaseMiddleware):
 
 
 class CallbackAckWatchdogMiddleware(BaseMiddleware):
-    def __init__(self, delay: float = 1.5):
+    def __init__(self, delay: float = 0.2):
         self.delay = delay
 
     async def __call__(
@@ -159,6 +163,11 @@ class CallbackAckWatchdogMiddleware(BaseMiddleware):
     ) -> Any:
         if not isinstance(event, CallbackQuery):
             return await handler(event, data)
+
+        if event.message and event.data != "adm:broadcast:progress":
+            from bot.services.broadcast import hide_progress_view
+
+            hide_progress_view(event.message.chat.id, event.message.message_id)
 
         trace = CallbackTrace(event.id, event.message.chat.id if event.message else None,
                               ":".join((event.data or "").split(":")[:2]))
@@ -186,6 +195,21 @@ class CallbackAckWatchdogMiddleware(BaseMiddleware):
                     trace.action, duration * 1000, trace.api_calls, trace.api_seconds * 1000,
                     round(trace.first_ui_ms) if trace.first_ui_ms is not None else "-",
                 )
+
+
+class UserIdentityMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        if isinstance(event, (Message, CallbackQuery)) and event.from_user:
+            from bot.cache import get_admins
+            from bot.services.chat_info import observe_user_identity
+
+            user = event.from_user
+            if not user.is_bot and user.id in get_admins() and not (isinstance(event, Message) and event.sender_chat):
+                try:
+                    observe_user_identity(user, data.get("bot"))
+                except Exception:
+                    logger.exception("event=admin.identity_update_failed user_id=%s", user.id)
+        return await handler(event, data)
 
 
 class UserActionLoggingMiddleware(BaseMiddleware):

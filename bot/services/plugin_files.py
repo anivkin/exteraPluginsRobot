@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from aiogram.types import FSInputFile
+from aiogram.exceptions import TelegramBadRequest
 
 from bot import limits
 from bot.helpers import blank_and_delete, fit_filename
@@ -14,6 +15,8 @@ logger = logging.getLogger(__name__)
 
 
 def plugin_document(plugin: dict, file_id: str | None = None):
+    if file_id:
+        return file_id
     path = Path(plugin.get("file_path") or "")
     stored_id = file_id or plugin.get("file_id")
     if path.is_file():
@@ -28,7 +31,15 @@ def plugin_document(plugin: dict, file_id: str | None = None):
     return stored_id or None
 
 
-async def send_plugin_document(bot, chat_id, plugin, **kwargs):
+async def send_plugin_document(bot, chat_id, plugin, *, file_id: str | None = None, **kwargs):
+    if file_id:
+        try:
+            return await bot.send_document(chat_id, document=plugin_document(plugin, file_id), **kwargs)
+        except TelegramBadRequest as exc:
+            if (not any(marker in str(exc).lower() for marker in ("wrong file", "file_id", "file identifier", "file reference"))
+                    or not Path(plugin.get("file_path") or "").is_file()):
+                raise
+            plugin = {**plugin, "file_id": None}
     path = Path(plugin.get("file_path") or "")
     if not path.is_file() or path.stat().st_size <= limits.BOT_UPLOAD_BYTES or plugin.get("file_id"):
         return await bot.send_document(chat_id, document=plugin_document(plugin), **kwargs)

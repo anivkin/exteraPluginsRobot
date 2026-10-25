@@ -4,6 +4,7 @@ import html
 import logging
 import re
 from functools import lru_cache
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 from typing import Dict, Optional
@@ -25,6 +26,7 @@ from bot.cache import get_config
 from bot.context import get_lang
 from bot.formatting import split_html, telegram_html, visible_html_length
 from bot.texts import t
+from bot.telemetry import callback_trace
 from core.storage import DATA_DIR
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -237,7 +239,11 @@ async def ack(cb: CallbackQuery, text: str | None = None, *, show_alert: bool = 
 
 
 def spawn_background(coro) -> None:
-    task = asyncio.create_task(coro)
+    trace_token = callback_trace.set(None)
+    try:
+        task = asyncio.create_task(coro)
+    finally:
+        callback_trace.reset(trace_token)
     _background_tasks.add(task)
 
     def _done(completed: asyncio.Task) -> None:
@@ -256,6 +262,16 @@ def spawn_background(coro) -> None:
 
 
 BLANK_SETTLE_DELAY = 1.5
+
+
+def message_is_too_old(sent_at) -> bool:
+    try:
+        date = sent_at if isinstance(sent_at, datetime) else datetime.fromisoformat(str(sent_at).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return False
+    if date.tzinfo is None:
+        date = date.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - date >= timedelta(hours=48)
 
 
 async def send_in_parts(bot, chat_id: int, text: str, kb=None, *,
@@ -308,6 +324,13 @@ async def blank_and_delete(bot, chat_id: int, message_id: int, *, is_media: bool
                 blanked_with = candidate
                 break
             except Exception as exc:
+                if isinstance(exc, TelegramRetryAfter):
+                    async def retry_blank(wait=exc.retry_after):
+                        await asyncio.sleep(max(1, float(wait)))
+                        await blank_and_delete(bot, chat_id, message_id, is_media=is_media)
+
+                    spawn_background(retry_blank())
+                    return False
                 if _is_not_modified_error(exc):
                     blanked = True
                     blanked_with = candidate

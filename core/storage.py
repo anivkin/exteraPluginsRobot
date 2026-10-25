@@ -41,6 +41,7 @@ _DOC_POSTER = "poster"
 _DOC_DIALOGS = "dialogs"
 _DOC_STATS = "stats"
 _DOC_QUIZ = "quiz"
+_DOC_BROADCASTS = "broadcasts"
 
 _cache: Dict[str, Dict[str, Any]] = {}
 _cache_time: Dict[str, float] = {}
@@ -335,6 +336,8 @@ def _is_doc_empty(doc_key: str, data: Dict[str, Any]) -> bool:
         return not bool(data.get("events"))
     if doc_key == _DOC_QUIZ:
         return not bool(data.get("questions"))
+    if doc_key == _DOC_BROADCASTS:
+        return not bool(data.get("runs"))
     return len(data) == 0
 
 
@@ -684,6 +687,21 @@ def _read_quiz_doc(conn: sqlite3.Connection) -> Dict[str, Any]:
     return data
 
 
+def _read_broadcasts_doc(conn: sqlite3.Connection) -> Dict[str, Any]:
+    data = _get_meta_json(conn, _meta_key(_DOC_BROADCASTS), {})
+    if not isinstance(data.get("runs"), list):
+        data["runs"] = []
+    return data
+
+
+def _write_broadcasts_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
+    payload = dict(data) if isinstance(data, dict) else {}
+    if not isinstance(payload.get("runs"), list):
+        payload["runs"] = []
+    _set_meta_json(conn, _meta_key(_DOC_BROADCASTS), payload)
+    _mark_initialized(conn, _DOC_BROADCASTS)
+
+
 def _write_quiz_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
     payload = dict(data) if isinstance(data, dict) else {}
     if not isinstance(payload.get("questions"), list):
@@ -743,6 +761,7 @@ _READERS = {
     _DOC_DIALOGS: _read_dialogs_doc,
     _DOC_STATS: _read_stats_doc,
     _DOC_QUIZ: _read_quiz_doc,
+    _DOC_BROADCASTS: _read_broadcasts_doc,
 }
 
 _WRITERS = {
@@ -758,6 +777,7 @@ _WRITERS = {
     _DOC_DIALOGS: _write_dialogs_doc,
     _DOC_STATS: _write_stats_doc,
     _DOC_QUIZ: _write_quiz_doc,
+    _DOC_BROADCASTS: _write_broadcasts_doc,
 }
 
 
@@ -1153,6 +1173,14 @@ def load_audit() -> Dict[str, Any]:
 
 def save_audit(data: Dict[str, Any]) -> None:
     _save_sync(_DOC_AUDIT, data)
+
+
+def load_broadcasts() -> Dict[str, Any]:
+    return _normalize_dict(_get_cached(_DOC_BROADCASTS), {"runs": []})
+
+
+def save_broadcasts(data: Dict[str, Any]) -> None:
+    _save_sync(_DOC_BROADCASTS, data)
 
 
 def load_poster() -> Dict[str, Any]:

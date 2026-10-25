@@ -14,6 +14,7 @@ from bot.middlewares import (
     CallbackAckWatchdogMiddleware,
     CommandStateResetMiddleware,
     UserActionLoggingMiddleware,
+    UserIdentityMiddleware,
     on_transient_error,
     start_log_worker,
     stop_log_worker,
@@ -189,8 +190,10 @@ async def main() -> None:
     dp = Dispatcher()
     
     dp.update.middleware(UserActionLoggingMiddleware(enabled=True))
-    dp.callback_query.outer_middleware(CallbackAckWatchdogMiddleware(delay=1.5))
+    dp.callback_query.outer_middleware(CallbackAckWatchdogMiddleware())
+    dp.callback_query.outer_middleware(UserIdentityMiddleware())
     dp.callback_query.outer_middleware(RequestCallbackMiddleware())
+    dp.message.outer_middleware(UserIdentityMiddleware())
     dp.message.outer_middleware(CommandStateResetMiddleware())
     
     dp.include_router(inline_flow.router)

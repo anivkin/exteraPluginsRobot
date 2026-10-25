@@ -10,10 +10,11 @@ from pathlib import Path
 from typing import Literal
 
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramRetryAfter
 
 from bot.cache import get_admins, get_config
 from bot.formatting import code_html, quote_html, split_html, strip_blockquote_tags, telegram_html, user_mention
-from bot.helpers import blank_and_delete, link_preview_options
+from bot.helpers import blank_and_delete, link_preview_options, message_is_too_old
 from bot.icons import emoji_html
 from bot.keyboards import moderation_appeal_kb, moderation_delete_kb, moderation_vote_kb
 from bot import limits
@@ -418,6 +419,8 @@ async def send_media_group(bot, chat_id: int, media: list, *, topic_id: int | No
             return [int(sent.message_id)]
         sent = await bot.send_media_group(chat_id, group, **kw)
         return [int(m.message_id) for m in sent]
+    except TelegramRetryAfter:
+        raise
     except Exception:
         logger.exception("send_media_group failed chat_id=%s count=%s", chat_id, len(group))
         if raise_errors:
@@ -465,6 +468,7 @@ async def send_request_to_forum(bot, entry: dict, text: str, file_path: str | No
                 bot,
                 chat_id,
                 {**(entry.get("payload", {}).get("plugin") or {}), "file_path": file_path},
+                file_id=(entry.get("payload") or {}).get("moderation_file_id"),
                 message_thread_id=topic_id,
                 reply_to_message_id=msg.message_id,
                 allow_sending_without_reply=True,
@@ -488,6 +492,7 @@ async def send_request_to_forum(bot, entry: dict, text: str, file_path: str | No
             "chat_id": chat_id,
             "message_thread_id": actual_topic_id,
             "message_id": int(msg.message_id),
+            "sent_at": datetime.now(timezone.utc).isoformat(),
         }
         payload_update: dict[str, object] = {"moderation_forum_message": info}
         head_ids = [i for i in sent_message_ids if i != int(msg.message_id)]
@@ -510,7 +515,10 @@ async def send_request_to_forum(bot, entry: dict, text: str, file_path: str | No
     except Exception:
         for message_id in reversed(sent_message_ids):
             try:
-                await blank_and_delete(bot, chat_id, message_id)
+                await blank_and_delete(
+                    bot, chat_id, message_id,
+                    is_media=bool(file_msg and message_id == file_msg.message_id),
+                )
             except Exception:
                 logger.warning(
                     "forum delivery rollback failed request_id=%s message_id=%s",
@@ -621,11 +629,31 @@ async def delete_forum_request_message(bot, entry: dict | None) -> None:
         if message_id and message_id not in message_ids:
             message_ids.append(message_id)
 
-    for message_id in message_ids:
+    if message_is_too_old(info.get("sent_at") or entry.get("submitted_at")):
         try:
-            await blank_and_delete(bot, int(chat_id), message_id)
+            await bot.edit_message_reply_markup(
+                chat_id=int(chat_id), message_id=int(info.get("message_id") or message_ids[0]),
+                reply_markup=None,
+            )
         except Exception:
             pass
+    else:
+        media_ids = set()
+        for value in [info.get("file_message_id"), *(info.get("comment_media_message_ids") or [])]:
+            try:
+                media_ids.add(int(value))
+            except (TypeError, ValueError):
+                pass
+        for message_id in message_ids:
+            try:
+                await blank_and_delete(bot, int(chat_id), message_id, is_media=message_id in media_ids)
+            except Exception:
+                pass
+
+    request_id = str(entry.get("id") or "")
+    current = get_request_by_id(request_id) if request_id else None
+    if current and (current.get("payload") or {}).get("moderation_forum_message") == info:
+        update_request_payload(request_id, {"moderation_forum_message": None})
 
 
 def can_vote_in_context(user_id: int | None, chat_id: int | None) -> bool:

@@ -19,7 +19,7 @@ from core.storage import flush_documents, load_icons, load_plugins, load_updated
 from core.request_store import update_request_status
 from bot.cache import get_categories, invalidate, get_config
 from bot import limits
-from core.catalog import invalidate_catalog_cache, plugin_deeplink_token
+from core.catalog import find_plugin_by_slug, invalidate_catalog_cache, plugin_deeplink_token
 from core.categories import categories_for, category_fields
 from core.channel_parser import HASHTAG_TO_CATEGORY
 from bot.languages import category_labels
@@ -343,6 +343,10 @@ async def update_plugin(
         raise ValueError("Userbot not available")
 
     payload = entry.get("payload", {})
+    current = find_plugin_by_slug(payload.get("update_slug") or old_catalog_entry.get("slug"))
+    expected_id = str((payload.get("plugin") or {}).get("id") or "").strip()
+    if current and expected_id and str(current.get("plugin_id") or "").strip() == expected_id:
+        old_catalog_entry = current
     if not categories_for(payload):
         payload.update(category_fields(old_catalog_entry))
     await prepare_catalog_categories(payload, old_catalog_entry, userbot)
