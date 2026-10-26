@@ -1,11 +1,13 @@
 import asyncio
 import html
 import logging
+import shutil
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict
 from urllib.parse import unquote
+from uuid import uuid4
 
 from aiogram import F, Router
 from aiogram.enums import ParseMode
@@ -23,7 +25,7 @@ from aiogram.types import (
 from bot.context import get_language, get_lang
 from bot.languages import normalize_language
 from bot.callback_tokens import decode_slug, encode_slug
-from core.plugin_formats import plugin_file_limit
+from core.plugin_formats import plugin_extension, plugin_file_limit
 from core.categories import CATEGORY_KEYS, MAX_CATEGORIES, categories_for, category_fields
 from bot import limits
 from bot.formatting import plain_html, strip_blockquote_tags, telegram_html, user_mention
@@ -64,6 +66,7 @@ from bot.services.validation import (
     submission_fingerprint,
     validate_new_submission,
     validate_update_submission,
+    validate_request_replacement,
 )
 from bot.states import UserFlow
 from bot.texts import TEXTS, t
@@ -76,6 +79,9 @@ from bot.keyboards import catalog_main_kb, profile_kb, admin_menu_kb
 from bot.states import AdminFlow
 from core.catalog import find_user_icons
 from core.request_store import (
+    acquire_request_lock,
+    release_request_lock,
+    request_callback_token,
     add_draft_request,
     add_request,
     delete_request_and_file,
@@ -83,6 +89,7 @@ from core.request_store import (
     get_user_requests,
     get_request_by_deeplink_token,
     get_request_by_id,
+    get_request_by_callback_token,
     promote_draft_request,
     update_request_payload,
     update_request_status,
@@ -610,7 +617,7 @@ async def _sync_submission_draft(
         await state.update_data(draft_request_id=entry.get("id"))
 
 
-async def _sync_pending_plugin_request(state: FSMContext, request_id: str) -> None:
+async def _stage_pending_plugin_changes(state: FSMContext, request_id: str) -> None:
     data = await state.get_data()
     plugin = data.get("plugin", {})
     if not plugin:
@@ -625,10 +632,10 @@ async def _sync_pending_plugin_request(state: FSMContext, request_id: str) -> No
         "publish_not_before": data.get("publish_not_before"),
         "submission_type": "plugin",
     }
-    update_request_payload(request_id, payload)
+    await state.update_data(pending_request_changes=deepcopy(payload))
 
 
-async def _sync_pending_update_request(state: FSMContext, request_id: str) -> None:
+async def _stage_pending_update_changes(state: FSMContext, request_id: str) -> None:
     data = await state.get_data()
     plugin = data.get("plugin", {})
     if not plugin:
@@ -645,7 +652,23 @@ async def _sync_pending_update_request(state: FSMContext, request_id: str) -> No
         **category_fields(data),
         "submission_type": "update",
     }
-    update_request_payload(request_id, payload)
+    await state.update_data(pending_request_changes=deepcopy(payload))
+
+
+def _editable_own_request(request_id: str, user_id: int | None) -> dict | None:
+    if not user_id:
+        return None
+    entry = get_request_by_id(request_id)
+    if (not entry or entry.get("status") not in _EDITABLE_REQUEST_STATUSES
+            or entry.get("type") not in {"new", "update"}
+            or (entry.get("payload") or {}).get("user_id") != user_id):
+        return None
+    return entry
+
+
+def _request_edit_fingerprint(payload: dict) -> str:
+    normalized = {**payload, **category_fields(payload)}
+    return submission_fingerprint(normalized) + ":" + str((payload.get("plugin") or {}).get("file_path") or "")
 
 
 async def _notify_admins_request_updated(bot, entry: Dict[str, Any], note: str = "") -> bool:
@@ -665,6 +688,10 @@ async def _notify_admins_request_updated(bot, entry: Dict[str, Any], note: str =
     except Exception:
         logger.warning("event=submission.notify_forum_update.failed request_id=%s", request_id, exc_info=True)
         return False
+    update_request_payload(request_id, {"update_notification_pending": False})
+    from core.storage import flush_documents
+
+    await flush_documents("requests")
     try:
         await delete_forum_request_message(bot, previous)
     except Exception:
@@ -917,17 +944,19 @@ async def on_lang(cb: CallbackQuery, state: FSMContext) -> None:
     await cb.answer(t("language_saved", lang))
 
 
-@router.callback_query(F.data.startswith("pendupd:"))
+@router.callback_query(F.data.regexp(r"^pendupdreq:[^:]+$"))
+@router.callback_query(F.data.regexp(r"^pendupd:(?!(?:delete|delete_confirm|back|submit)$)[^:]+$"))
 async def on_open_pending_update_request(cb: CallbackQuery, state: FSMContext) -> None:
     if not cb.from_user:
         await cb.answer()
         return
     lang = await get_language(cb, state)
     request_id = cb.data.split(":", 1)[1]
-    req = get_request_by_id(request_id)
+    req = get_request_by_callback_token(request_id)
     if not isinstance(req, dict):
         await cb.answer(t("not_found", lang), show_alert=True)
         return
+    request_id = str(req["id"])
     if req.get("status") not in _EDITABLE_REQUEST_STATUSES or req.get("type") != "update":
         await cb.answer(t("not_found", lang), show_alert=True)
         return
@@ -939,14 +968,16 @@ async def on_open_pending_update_request(cb: CallbackQuery, state: FSMContext) -
         await cb.answer(t("not_found", lang), show_alert=True)
         return
 
-    plugin = payload.get("plugin", {}) if isinstance(payload.get("plugin"), dict) else {}
+    plugin = deepcopy(payload.get("plugin", {})) if isinstance(payload.get("plugin"), dict) else {}
     await state.clear()
     await state.update_data(
         lang=lang,
         plugin=plugin,
+        pending_request_fingerprint=_request_edit_fingerprint(payload),
+        pending_request_changes=None,
         changelog=payload.get("changelog", ""),
         update_slug=payload.get("update_slug", ""),
-        old_plugin=payload.get("old_plugin", {}),
+        old_plugin=deepcopy(payload.get("old_plugin", {})),
         description_ru=payload.get("description_ru", ""),
         description_en=payload.get("description_en", ""),
         usage_ru=payload.get("usage_ru", ""),
@@ -1165,10 +1196,11 @@ async def on_open_pending_request(cb: CallbackQuery, state: FSMContext) -> None:
         return
     lang = await get_language(cb, state)
     request_id = cb.data.split(":", 1)[1]
-    req = get_request_by_id(request_id)
+    req = get_request_by_callback_token(request_id)
     if not isinstance(req, dict):
         await cb.answer(t("not_found", lang), show_alert=True)
         return
+    request_id = str(req["id"])
     if req.get("status") not in _EDITABLE_REQUEST_STATUSES or req.get("type") != "new":
         await cb.answer(t("not_found", lang), show_alert=True)
         return
@@ -1180,11 +1212,13 @@ async def on_open_pending_request(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer(t("not_found", lang), show_alert=True)
         return
 
-    plugin = payload.get("plugin", {}) if isinstance(payload.get("plugin"), dict) else {}
+    plugin = deepcopy(payload.get("plugin", {})) if isinstance(payload.get("plugin"), dict) else {}
     await state.clear()
     await state.update_data(
         lang=lang,
         plugin=plugin,
+        pending_request_fingerprint=_request_edit_fingerprint(payload),
+        pending_request_changes=None,
         description_ru=payload.get("description_ru", ""),
         description_en=payload.get("description_en", ""),
         usage_ru=payload.get("usage_ru", ""),
@@ -1227,7 +1261,8 @@ async def on_profile_delete(cb: CallbackQuery, state: FSMContext) -> None:
         return
     lang = await get_language(cb, state)
     slug = decode_slug(cb.data.split(":", 2)[2])
-    plugin = find_plugin_by_slug(slug)
+    plugin = next((item for item in find_user_plugins(cb.from_user.id, cb.from_user.username or "")
+                   if item.get("slug") == slug), None) if cb.from_user else None
 
     if not plugin:
         await cb.answer(t("not_found", lang), show_alert=True)
@@ -1271,7 +1306,8 @@ async def on_profile_update(cb: CallbackQuery, state: FSMContext) -> None:
         return
     lang = await get_language(cb, state)
     slug = decode_slug(cb.data.split(":", 2)[2])
-    plugin = find_plugin_by_slug(slug)
+    plugin = next((item for item in find_user_plugins(cb.from_user.id, cb.from_user.username or "")
+                   if item.get("slug") == slug), None) if cb.from_user else None
 
     if not plugin:
         await cb.answer(t("not_found", lang), show_alert=True)
@@ -1403,7 +1439,7 @@ async def on_changelog(message: Message, state: FSMContext) -> None:
         await state.update_data(draft_message_id=sent.message_id)
 
 
-@router.callback_query(UserFlow.confirming_update, F.data.regexp(r"^(upd|pendupd):"))
+@router.callback_query(UserFlow.confirming_update, F.data.regexp(r"^(upd|pendupd):(?:edit:[^:]+|lang:[^:]+:[^:]+|cat:[^:]+|back|submit)$"))
 async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
     if not await _ensure_not_banned(cb, state):
         return
@@ -1468,7 +1504,7 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
             data = await state.get_data()
             req_id = str(data.get("pending_request_id") or "")
             if req_id:
-                await _sync_pending_update_request(state, req_id)
+                await _stage_pending_update_changes(state, req_id)
 
         await state.set_state(UserFlow.confirming_update)
         draft_text = _render_update_text(await state.get_data())
@@ -1524,7 +1560,7 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
             if not req_id:
                 await cb.answer(t("not_found", lang), show_alert=True)
                 return
-            await _sync_pending_update_request(state, req_id)
+            await _stage_pending_update_changes(state, req_id)
             await state.update_data(update_note_request_id=req_id)
             await state.set_state(UserFlow.entering_update_note)
             await answer(cb, t("ask_update_note", lang), cancel_kb(lang), "update")
@@ -1576,10 +1612,15 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(UserFlow.confirming_submission, F.data == "pend:delete")
 async def on_pending_delete(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
+    request_id = str((await state.get_data()).get("pending_request_id") or "")
+    if not _editable_own_request(request_id, cb.from_user.id if cb.from_user else None):
+        await cb.answer(t("resubmit_expired", lang), show_alert=True)
+        return
+    await state.update_data(withdraw_confirmation_request_id=request_id)
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text=t("btn_confirm", lang), callback_data="pend:delete_confirm"),
+                InlineKeyboardButton(text=t("btn_confirm", lang), callback_data=f"usr:withdraw_confirm:{request_callback_token(request_id)}"),
                 InlineKeyboardButton(text=t("btn_cancel", lang), callback_data="pend:back"),
             ]
         ]
@@ -1590,26 +1631,66 @@ async def on_pending_delete(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(UserFlow.confirming_submission, F.data == "pend:delete_confirm")
 async def on_pending_delete_confirm(cb: CallbackQuery, state: FSMContext) -> None:
+    await _withdraw_own_request(cb, state)
+
+
+async def _withdraw_own_request(cb: CallbackQuery, state: FSMContext, request_id: str | None = None) -> None:
     lang = await get_language(cb, state)
     data = await state.get_data()
-    req_id = str(data.get("pending_request_id") or "").strip()
-    if not req_id:
-        await cb.answer(t("not_found", lang), show_alert=True)
+    req_id = str(request_id or data.get("withdraw_confirmation_request_id") or "").strip()
+    entry = _editable_own_request(req_id, cb.from_user.id if cb.from_user else None)
+    if not entry:
+        await cb.answer(t("resubmit_expired", lang), show_alert=True)
         return
-    delete_request_and_file(req_id)
+    if not acquire_request_lock(req_id):
+        await cb.answer(t("admin_request_processing", lang), show_alert=True)
+        return
+    previous = deepcopy(entry)
+    try:
+        if not delete_request_and_file(req_id):
+            await cb.answer(t("not_found", lang), show_alert=True)
+            return
+        from core.storage import flush_documents
+        from bot.services.audit import add_audit_event
+
+        add_audit_event("moderation.request_withdrawn", actor_id=cb.from_user.id,
+                        actor=user_mention(cb.from_user.id, cb.from_user.username or ""), request_id=req_id)
+        await flush_documents("requests")
+    finally:
+        release_request_lock(req_id)
+    spawn_background(_cleanup_withdrawn_request(cb.bot, previous, user_mention(cb.from_user.id, cb.from_user.username or "")))
     await state.clear()
     await state.set_state(UserFlow.idle)
     await answer(cb, t("pending_deleted", lang), main_menu_kb(lang), "welcome")
     await ack(cb)
 
 
+async def _cleanup_withdrawn_request(bot, entry: dict, actor: str) -> None:
+    from bot.services.admin_notifications import finalize_admin_notify_messages
+
+    results = await asyncio.gather(
+        delete_forum_request_message(bot, entry),
+        finalize_admin_notify_messages(bot, entry, t("pending_withdrawn_admin", "ru"), actor),
+        return_exceptions=True,
+    )
+    for result in results:
+        if isinstance(result, Exception):
+            logger.error("event=submission.withdraw_cleanup_failed request_id=%s", entry.get("id"),
+                         exc_info=(type(result), result, result.__traceback__))
+
+
 @router.callback_query(UserFlow.confirming_update, F.data == "pendupd:delete")
 async def on_pending_update_delete(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
+    request_id = str((await state.get_data()).get("pending_request_id") or "")
+    if not _editable_own_request(request_id, cb.from_user.id if cb.from_user else None):
+        await cb.answer(t("resubmit_expired", lang), show_alert=True)
+        return
+    await state.update_data(withdraw_confirmation_request_id=request_id)
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text=t("btn_confirm", lang), callback_data="pendupd:delete_confirm"),
+                InlineKeyboardButton(text=t("btn_confirm", lang), callback_data=f"usr:withdraw_confirm:{request_callback_token(request_id)}"),
                 InlineKeyboardButton(text=t("btn_cancel", lang), callback_data="pendupd:back"),
             ]
         ]
@@ -1620,17 +1701,16 @@ async def on_pending_update_delete(cb: CallbackQuery, state: FSMContext) -> None
 
 @router.callback_query(UserFlow.confirming_update, F.data == "pendupd:delete_confirm")
 async def on_pending_update_delete_confirm(cb: CallbackQuery, state: FSMContext) -> None:
-    lang = await get_language(cb, state)
-    data = await state.get_data()
-    req_id = str(data.get("pending_request_id") or "").strip()
-    if not req_id:
-        await cb.answer(t("not_found", lang), show_alert=True)
+    await _withdraw_own_request(cb, state)
+
+
+@router.callback_query(F.data.startswith("usr:withdraw_confirm:"))
+async def on_scoped_request_withdraw(cb: CallbackQuery, state: FSMContext) -> None:
+    entry = get_request_by_callback_token(cb.data.split(":")[2])
+    if not entry:
+        await cb.answer(t("resubmit_expired", await get_language(cb, state)), show_alert=True)
         return
-    delete_request_and_file(req_id)
-    await state.clear()
-    await state.set_state(UserFlow.idle)
-    await answer(cb, t("pending_deleted", lang), main_menu_kb(lang), "welcome")
-    await ack(cb)
+    await _withdraw_own_request(cb, state, str(entry["id"]))
 
 
 @router.message(UserFlow.uploading_pending_update_file, F.document)
@@ -1645,6 +1725,10 @@ async def on_pending_update_file(message: Message, state: FSMContext) -> None:
         await message.answer(t("not_found", lang))
         return
 
+    entry = _editable_own_request(req_id, message.from_user.id if message.from_user else None)
+    if not entry:
+        await message.answer(t("resubmit_expired", lang))
+        return
     existing = data.get("plugin", {})
     expected_id = (existing.get("id") or "").strip()
     old_plugin = data.get("old_plugin", {})
@@ -1677,10 +1761,6 @@ async def on_pending_update_file(message: Message, state: FSMContext) -> None:
         ))
         return
 
-    old_path = (existing.get("file_path") or "").strip()
-    if old_path and old_path != new_plugin.get("file_path"):
-        Path(old_path).unlink(missing_ok=True)
-
     merged = {
         **new_plugin,
         "id": expected_id or new_plugin.get("id"),
@@ -1694,7 +1774,7 @@ async def on_pending_update_file(message: Message, state: FSMContext) -> None:
     fields = category_fields(categories_for(data) or categories_for(new_plugin))
     merged["categories"] = fields["category_keys"]
     await state.update_data(plugin=merged, **fields)
-    await _sync_pending_update_request(state, req_id)
+    await _stage_pending_update_changes(state, req_id)
 
     await state.set_state(UserFlow.confirming_update)
     draft_text = _render_update_text(await state.get_data())
@@ -2020,7 +2100,7 @@ async def on_draft_not_before_value(message: Message, state: FSMContext) -> None
     if prefix == "pend":
         req_id = str(data.get("pending_request_id") or "")
         if req_id:
-            await _sync_pending_plugin_request(state, req_id)
+            await _stage_pending_plugin_changes(state, req_id)
     else:
         await _sync_submission_draft(state, message.from_user.id, message.from_user.username or "", "plugin")
 
@@ -2070,7 +2150,7 @@ async def on_draft_category(cb: CallbackQuery, state: FSMContext) -> None:
         data = await state.get_data()
         req_id = str(data.get("pending_request_id") or "")
         if req_id:
-            await _sync_pending_plugin_request(state, req_id)
+            await _stage_pending_plugin_changes(state, req_id)
 
     await state.set_state(UserFlow.confirming_submission)
     draft_text = _render_draft_text(await state.get_data())
@@ -2168,7 +2248,7 @@ async def on_draft_field_value(message: Message, state: FSMContext) -> None:
         data = await state.get_data()
         req_id = str(data.get("pending_request_id") or "")
         if req_id:
-            await _sync_pending_plugin_request(state, req_id)
+            await _stage_pending_plugin_changes(state, req_id)
         await state.set_state(UserFlow.confirming_submission)
         draft_text = _render_draft_text(await state.get_data())
     else:
@@ -2239,6 +2319,10 @@ async def on_pending_file(message: Message, state: FSMContext) -> None:
         await message.answer(t("not_found", lang))
         return
 
+    entry = _editable_own_request(req_id, message.from_user.id if message.from_user else None)
+    if not entry:
+        await message.answer(t("resubmit_expired", lang))
+        return
     existing = data.get("plugin", {})
     expected_id = (existing.get("id") or "").strip()
 
@@ -2262,9 +2346,10 @@ async def on_pending_file(message: Message, state: FSMContext) -> None:
         await message.answer(t("pending_file_id_mismatch", lang))
         return
 
-    old_path = (existing.get("file_path") or "").strip()
-    if old_path and old_path != new_plugin.get("file_path"):
-        Path(old_path).unlink(missing_ok=True)
+    valid, error = validate_request_replacement(entry, new_plugin)
+    if not valid:
+        await message.answer(_submission_error_text(error, lang, plugin_min=new_plugin.get("min_version") or ""))
+        return
 
     merged = {
         **new_plugin,
@@ -2279,7 +2364,7 @@ async def on_pending_file(message: Message, state: FSMContext) -> None:
     fields = category_fields(categories_for(data) or categories_for(new_plugin))
     merged["categories"] = fields["category_keys"]
     await state.update_data(plugin=merged, **fields)
-    await _sync_pending_plugin_request(state, req_id)
+    await _stage_pending_plugin_changes(state, req_id)
 
     await state.set_state(UserFlow.confirming_submission)
     draft_text = _render_draft_text(await state.get_data())
@@ -2323,7 +2408,7 @@ async def on_draft_submit(cb: CallbackQuery, state: FSMContext) -> None:
         if not req_id:
             await cb.answer(t("not_found", lang), show_alert=True)
             return
-        await _sync_pending_plugin_request(state, req_id)
+        await _stage_pending_plugin_changes(state, req_id)
         await state.update_data(update_note_request_id=req_id)
         await state.set_state(UserFlow.entering_update_note)
         await answer(cb, t("ask_update_note", lang), cancel_kb(lang), "new")
@@ -2886,41 +2971,23 @@ async def on_resubmit_request(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer(t("resubmit_expired", lang), show_alert=True)
         return
 
-    payload = entry.get("payload") or {}
+    payload = deepcopy(entry.get("payload") or {})
     payload.update(category_fields(categories_for(payload) or categories_for(payload.get("old_plugin") or {})))
     missing = missing_draft_fields(payload)
     if missing:
         await cb.answer(t("resubmit_missing_fields", lang), show_alert=True)
         return
 
-    await _prepare_request_categories(entry)
     snapshot = str(payload.get("rework_fingerprint") or "")
     if snapshot and submission_fingerprint(payload) == snapshot:
         await cb.answer(t("resubmit_no_changes", lang), show_alert=True)
         return
 
-    update_request_status(request_id, "pending")
-    from bot.services.moderation import archive_votes_for_rework
-    archive_votes_for_rework(request_id)
-    entry = get_request_by_id(request_id)
-    logger.info(
-        "event=submission.resubmit request_id=%s user_id=%s",
-        request_id, cb.from_user.id if cb.from_user else None,
-    )
-    try:
-        await notify_admins_request(cb.bot, entry)
-    except Exception:
-        logger.exception("event=submission.resubmit.notify_failed request_id=%s", request_id)
-
-    try:
-        if cb.message:
-            await cb.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
-    try:
-        await cb.message.answer(t("resubmit_done", lang), parse_mode=ParseMode.HTML)
-    except Exception:
-        pass
+    await state.update_data(update_note_request_id=request_id,
+                            pending_request_changes=None,
+                            pending_request_fingerprint=_request_edit_fingerprint(payload))
+    await state.set_state(UserFlow.entering_update_note)
+    await answer(cb, t("ask_update_note", lang), cancel_kb(lang), "profile")
     await ack(cb)
 
 
@@ -2929,6 +2996,9 @@ async def on_update_note(message: Message, state: FSMContext) -> None:
     if not await _ensure_not_banned(message, state):
         return
     lang = await get_language(message, state)
+    if (message.text or "").lstrip().startswith("/"):
+        await message.answer(t("command_ignored_in_input", lang))
+        return
     note = strip_blockquote_tags(telegram_html(message.html_text or message.text or "")).strip()
     if not note:
         await message.answer(t("need_text", lang), parse_mode=ParseMode.HTML)
@@ -2939,6 +3009,7 @@ async def on_update_note(message: Message, state: FSMContext) -> None:
     entry = get_request_by_id(req_id) if req_id else None
     if (
         not entry
+        or not message.from_user
         or entry.get("status") not in _EDITABLE_REQUEST_STATUSES
         or entry.get("type") not in {"new", "update"}
         or entry.get("payload", {}).get("user_id") != (message.from_user.id if message.from_user else None)
@@ -2947,24 +3018,73 @@ async def on_update_note(message: Message, state: FSMContext) -> None:
         await message.answer(t("resubmit_expired", lang))
         return
 
-    payload = entry.get("payload") or {}
-    payload.update(category_fields(categories_for(payload) or categories_for(payload.get("old_plugin") or {})))
-    if missing_draft_fields(payload):
-        await message.answer(t("resubmit_missing_fields", lang))
+    if not acquire_request_lock(req_id):
+        await message.answer(t("admin_request_processing", lang))
         return
-    await _prepare_request_categories(entry)
-    if entry.get("status") == "rework":
-        snapshot = str(payload.get("rework_fingerprint") or "")
-        if snapshot and submission_fingerprint(payload) == snapshot:
+    try:
+        payload = entry.get("payload") or {}
+        baseline = data.get("pending_request_fingerprint")
+        if baseline and baseline != _request_edit_fingerprint(payload):
+            await message.answer(t("pending_request_changed", lang))
+            return
+        candidate = {**deepcopy(payload), **deepcopy(data.get("pending_request_changes") or {})}
+        candidate.update(category_fields(categories_for(candidate) or categories_for(candidate.get("old_plugin") or {})))
+        if missing_draft_fields(candidate):
+            await message.answer(t("resubmit_missing_fields", lang))
+            return
+        changed = _request_edit_fingerprint(candidate) != _request_edit_fingerprint(payload)
+        if entry.get("status") == "rework":
+            snapshot = str(payload.get("rework_fingerprint") or "")
+            changed = changed or bool(snapshot and submission_fingerprint(candidate) != snapshot)
+        if not changed and not payload.get("update_notification_pending"):
             await message.answer(t("resubmit_no_changes", lang))
+            return
+        plugin = candidate.get("plugin") or {}
+        valid, error = validate_request_replacement(entry, plugin)
+        if not valid:
+            await message.answer(_submission_error_text(error, lang, plugin_min=plugin.get("min_version") or ""))
+            return
+        path = Path(plugin.get("file_path") or "")
+        if not path.is_file():
+            await message.answer(t("pending_replacement_missing", lang))
+            return
+        if changed and str(path) == str((payload.get("plugin") or {}).get("file_path") or ""):
+            replacement = path.with_name(f"edit-{uuid4().hex}.{plugin_extension(path)}")
+            await asyncio.to_thread(shutil.copyfile, path, replacement)
+            plugin["file_path"] = str(replacement)
+            plugin["file_id"] = None
+        await prepare_submission_categories(candidate)
+        current = _editable_own_request(req_id, message.from_user.id if message.from_user else None)
+        if not current or (baseline and baseline != _request_edit_fingerprint(current.get("payload") or {})):
+            await message.answer(t("pending_request_changed", lang))
             return
         from bot.services.moderation import archive_votes_for_rework
 
-        archive_votes_for_rework(req_id)
-        update_request_status(req_id, "pending")
-    update_request_payload(req_id, {"last_update_note": note})
+        if changed or entry.get("status") == "rework":
+            archive_votes_for_rework(req_id, after_rework=entry.get("status") == "rework")
+        updates = deepcopy(data.get("pending_request_changes") or {})
+        updates.update({
+            "plugin": candidate["plugin"], **category_fields(candidate),
+            "last_update_note": note, "update_notification_pending": True,
+            "moderation_file_id": None, "moderation_file_name": None,
+            "moderation_pending_votes": {},
+        })
+        update_request_payload(req_id, updates)
+        if entry.get("status") == "rework":
+            update_request_status(req_id, "pending", comment=note,
+                                  actor="@" + message.from_user.username if message.from_user.username else str(message.from_user.id),
+                                  actor_id=message.from_user.id)
+        from core.storage import flush_documents
+        from bot.services.audit import add_audit_event
+
+        add_audit_event("moderation.request_updated", actor_id=message.from_user.id,
+                        actor="@" + message.from_user.username if message.from_user.username else str(message.from_user.id),
+                        request_id=req_id, details={"note": note})
+        await flush_documents("requests")
+    finally:
+        release_request_lock(req_id)
     entry = get_request_by_id(req_id) or entry
-    await state.update_data(update_note_request_id=None)
+    await state.update_data(update_note_request_id=None, pending_request_changes=None, pending_request_fingerprint=None)
     await state.set_state(UserFlow.idle)
     delivered = await _notify_admins_request_updated(message.bot, entry, note)
     await message.answer(t("update_note_saved" if delivered else "update_note_delivery_failed", lang), parse_mode=ParseMode.HTML)

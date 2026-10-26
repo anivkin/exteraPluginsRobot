@@ -826,7 +826,7 @@ def admin_rejected_kb(
 
     filters: List[InlineKeyboardButton] = []
     filter_icons = {"all": "file", "published": "yes", "rejected": "no", "pending": "clock",
-                    "rework": "edit", "scheduled": "calendar"}
+                    "rework": "edit", "scheduled": "calendar", "approved": "yes"}
     for key, text_key in _AUDIT_FILTER_BUTTONS:
         label = t(text_key, lang)
         if key == status:

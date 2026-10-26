@@ -1,11 +1,10 @@
-SUPPORTED_LANGUAGES = ("ru", "en", "uk", "zh")
-LANGUAGE_NAMES = {"ru": "Русский", "en": "English", "uk": "Українська", "zh": "简体中文"}
-LANGUAGE_FLAGS = {"ru": "🇷🇺", "en": "🇺🇸", "uk": "🇺🇦", "zh": "🇨🇳"}
+SUPPORTED_LANGUAGES = ("ru", "en", "ua", "zh")
+LANGUAGE_NAMES = {"ru": "Русский", "en": "English", "ua": "Українська", "zh": "简体中文"}
+LANGUAGE_FLAGS = {"ru": "🇷🇺", "en": "🇺🇸", "ua": "🇺🇦", "zh": "🇨🇳"}
 
 
 def normalize_language(value, default="ru"):
     code = str(value or "").strip().lower().replace("_", "-").split("-", 1)[0]
-    code = "uk" if code == "ua" else code
     return code if code in SUPPORTED_LANGUAGES else default
 
 

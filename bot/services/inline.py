@@ -17,6 +17,7 @@ from aiogram.types import (
 
 from bot.formatting import normalize_custom_emoji, split_html, visible_html_length
 from bot.context import get_lang
+from bot.languages import SUPPORTED_LANGUAGES, normalize_language
 from bot.texts import t
 
 
@@ -27,6 +28,14 @@ _TTL = 3600
 _MAX_SNAPSHOTS = 2000
 _MAX_COMPLETED = 4000
 _EMOJI_TAG = re.compile(r"</?tg-emoji\b[^>]*>", re.IGNORECASE)
+
+
+def parse_inline_language(value: str, default: str = "ru") -> tuple[str, str]:
+    text = str(value or "").strip()
+    parts = text.rsplit(None, 1)
+    if len(parts) == 2 and parts[1].lower() in SUPPORTED_LANGUAGES:
+        return parts[0].strip(), parts[1].lower()
+    return text, normalize_language(default)
 
 
 @dataclass

@@ -3,6 +3,7 @@ import asyncio
 import hashlib
 import logging
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -24,12 +25,29 @@ _draft_reminder_before = timedelta(minutes=10)
 _cleanup_interval_seconds = 300
 _reminder_interval_seconds = 300
 _scheduled_interval_seconds = 30
+_processing_requests: Dict[str, float] = {}
 
 _REQUEST_ROUTE_TOKEN_RE = re.compile(r"^q[0-9a-f]{20}$")
 
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def acquire_request_lock(request_id: str) -> bool:
+    if not request_id:
+        return True
+    now = time.monotonic()
+    for stale in [key for key, stamp in _processing_requests.items() if now - stamp >= 300]:
+        _processing_requests.pop(stale, None)
+    if request_id in _processing_requests:
+        return False
+    _processing_requests[request_id] = now
+    return True
+
+
+def release_request_lock(request_id: str) -> None:
+    _processing_requests.pop(request_id, None)
 
 
 def _parse_datetime_utc(value: Any) -> Optional[datetime]:
@@ -520,6 +538,8 @@ def cleanup_orphan_plugin_files() -> int:
         if not file_path.is_file() or not plugin_extension(file_path):
             continue
         if file_path.resolve() not in active_paths:
+            if time.time() - file_path.stat().st_mtime < _draft_expiration.total_seconds():
+                continue
             file_path.unlink(missing_ok=True)
             removed += 1
     if removed:

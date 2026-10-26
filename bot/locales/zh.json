@@ -548,7 +548,7 @@
   "pending_file_id_mismatch": "文件中的插件 ID 与申请不一致。",
   "pending_delete_confirm": "删除此申请？",
   "pending_deleted": "申请已删除。",
-  "ask_update_note": "请说明你修改了申请中的哪些内容，审核员将看到此说明。",
+  "ask_update_note": "请说明申请中更改了哪些内容。审核人员将收到此说明和您在编辑器中选择的文件。发送说明后，更改才会生效。",
   "update_note_delivery_failed": "修改已保存，但无法将更新后的申请发送给审核团队，请在个人资料中重新提交。",
   "update_note_saved": "修改已发送给审核员",
   "admin_request_update_note": "\n\n<b>作者的修改：</b>\n<blockquote expandable>{note}</blockquote>",
@@ -859,5 +859,10 @@
   "admin_audit_filter_approved": "已批准",
   "profile_pending_approved": "已批准，等待发布",
   "profile_pending_scheduled": "已批准，发布时间 {datetime}",
-  "author_moderation_reasons_label": "审核理由"
+  "author_moderation_reasons_label": "审核理由",
+  "pending_request_changed": "申请已发生变化或已被审核。请从个人资料重新打开。",
+  "pending_replacement_missing": "申请文件不可用。请上传新的插件文件并重新保存更改。",
+  "pending_withdrawn_admin": "作者已撤回申请",
+  "audit_request_updated": "作者已更新申请",
+  "profile_pending_delete_info": "<b>频道删除申请。</b>在超级管理员确认删除之前，插件会继续保留在频道中。"
 }

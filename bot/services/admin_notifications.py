@@ -497,7 +497,7 @@ async def notify_superadmins_if_threshold(bot, entry: dict) -> None:
                 text,
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=not is_appeal,
-                link_preview_options=link_preview_options("appeal") if is_appeal else None,
+                link_preview_options=link_preview_options("appeal", lang=get_lang(admin_id)) if is_appeal else None,
                 reply_markup=reply_markup,
             )
             delivered += 1

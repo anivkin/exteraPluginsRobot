@@ -1,4 +1,5 @@
 import html
+import hashlib
 import logging
 import math
 import re
@@ -30,7 +31,7 @@ from bot.languages import category_labels, localized_value
 from core.categories import categories_for
 from bot.callback_tokens import decode_slug, encode_slug
 from bot.formatting import quote_html
-from bot.helpers import ack, answer, image_path, link_preview_options, strip_html
+from bot.helpers import ack, answer, image_path, link_preview_options, localized_image_key, strip_html
 from bot.helpers import with_hidden_preview_link as _with_hidden_preview_link
 from bot.icons import CATEGORY_FALLBACKS, CATEGORY_ICONS, ICONS
 from bot.menu_owner import MenuOwnerMiddleware
@@ -76,7 +77,7 @@ from core.storage import load_joinly
 from core.storage import save_joinly
 from core.request_store import get_request_by_id, get_request_by_plugin_id, get_user_requests, request_callback_token, update_request_payload
 from bot.services.moderation import VOTABLE_REQUEST_STATUSES, forum_text_with_votes, vote_counts
-from bot.services.inline import answer_inline
+from bot.services.inline import answer_inline, parse_inline_language
 
 router = Router(name="catalog-flow")
 router.callback_query.middleware(MenuOwnerMiddleware())
@@ -96,9 +97,7 @@ def _github_img_url(image_key: str) -> str:
 def _plugin_category_preview_url(category_key: str, lang: str = "en") -> str:
     keys = categories_for(category_key)
     image_key = f"cat_{keys[0]}" if keys else "cat_all"
-    if lang == "ru":
-        image_key += "_ru"
-    return _github_img_url(image_key)
+    return _github_img_url(localized_image_key(image_key, lang))
 
 
 def _plugin_source_label(entry: Dict[str, Any]) -> str:
@@ -960,10 +959,12 @@ async def on_profile_request(cb: CallbackQuery, state: FSMContext) -> None:
     if not entry or not cb.from_user or (entry.get("payload") or {}).get("user_id") != cb.from_user.id:
         await cb.answer(t("not_found", lang), show_alert=True)
         return
-    if entry.get("status") not in {"approved", "scheduled"}:
+    pending_removal = entry.get("type") == "delete" and entry.get("status") in {"pending", "error", "rework"}
+    if entry.get("status") not in {"approved", "scheduled"} and not pending_removal:
         await on_profile(cb, state)
         return
-    text = approval_status_text(entry, lang) + "\n\n" + _render_request_draft(entry, lang=lang)
+    status_text = t("profile_pending_delete_info", lang) if pending_removal else approval_status_text(entry, lang)
+    text = status_text + "\n\n" + _render_request_draft(entry, lang=lang)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[
         _btn(t("btn_back", lang), callback_data="profile", icon="back", style="danger"),
     ]])
@@ -1517,8 +1518,9 @@ async def on_my_items(cb: CallbackQuery, state: FSMContext) -> None:
             plugin = payload.get("plugin", {}) if isinstance(payload, dict) else {}
             name = str(plugin.get("name") or req_id).strip() or req_id
             req_type = req.get("type") if isinstance(req, dict) else "new"
-            cb_data = f"pendupd:{req_id}" if req_type == "update" else f"pendreq:{req_id}"
-            if isinstance(req, dict) and req.get("status") in {"approved", "scheduled"}:
+            request_token = request_callback_token(req_id)
+            cb_data = f"pendupdreq:{request_token}" if req_type == "update" else f"pendreq:{request_token}"
+            if isinstance(req, dict) and (req.get("status") in {"approved", "scheduled"} or req_type == "delete"):
                 cb_data = f"usr:request:{request_callback_token(req_id)}"
             label = _pending_label(req, lang) if isinstance(req, dict) else ""
             all_items.append((f"{name} — {label}" if label else name, cb_data))
@@ -1536,8 +1538,7 @@ async def on_my_items(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.inline_query()
 async def on_inline(query: InlineQuery) -> None:
-    text = (query.query or "").strip()
-    lang = get_lang(query.from_user.id if query.from_user else None)
+    text, lang = parse_inline_language(query.query, get_lang(query.from_user.id if query.from_user else None))
 
     lowered = text.lower()
     if lowered in {"donate", "inform"}:
@@ -1549,7 +1550,7 @@ async def on_inline(query: InlineQuery) -> None:
         )
         description = strip_html(message_text)
         result = InlineQueryResultArticle(
-            id=f"quick:{lowered}",
+            id=f"quick:{lowered}:{lang}",
             title=lowered,
             description=description[:100],
             input_message_content=InputTextMessageContent(
@@ -1643,7 +1644,7 @@ async def on_inline(query: InlineQuery) -> None:
 
         results.append(
             InlineQueryResultArticle(
-                id=f"plugin:{encode_slug(slug)}:{idx}",
+                id=f"plugin:{hashlib.sha256(str(slug).encode()).hexdigest()[:20]}:{lang}:{idx}",
                 title=title,
                 description=description[:100],
                 input_message_content=InputTextMessageContent(
@@ -1674,7 +1675,7 @@ async def on_inline(query: InlineQuery) -> None:
 
         results.append(
             InlineQueryResultArticle(
-                id=f"icon:{encode_slug(slug)}:{idx}",
+                id=f"icon:{hashlib.sha256(str(slug).encode()).hexdigest()[:20]}:{lang}:{idx}",
                 title=name,
                 description=description[:100],
                 input_message_content=InputTextMessageContent(

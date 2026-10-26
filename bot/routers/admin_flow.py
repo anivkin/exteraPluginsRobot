@@ -137,6 +137,7 @@ from bot.services.moderation import (
     vote_counts,
     vote_summary,
     with_author_vote_summary,
+    request_image_key,
 )
 from bot.services.submission import prepare_catalog_categories, process_plugin_file
 from core.categories import CATEGORY_KEYS, MAX_CATEGORIES, categories_for, category_fields
@@ -145,6 +146,8 @@ from bot.icons import emoji_html
 from bot.texts import TEXTS, t
 from core.catalog import find_icon_by_slug, find_plugin_by_slug, list_published_icons, list_published_plugins
 from core.request_store import (
+    acquire_request_lock as _acquire_request_lock,
+    release_request_lock as _release_request_lock,
     cleanup_hidden_requests,
     delete_request_and_file,
     delete_requests_by_plugin_id,
@@ -167,8 +170,6 @@ DEFAULT_UPDATE_REJECT_TEMPLATES = reason_templates.DEFAULT_UPDATE_REJECT_TEMPLAT
 
 logger = logging.getLogger(__name__)
 
-_processing_requests: Dict[str, float] = {}
-_PROCESSING_TTL = 300.0
 
 
 async def _open_admin_category_picker(cb: CallbackQuery, state: FSMContext, prefix: str, payload: dict) -> None:
@@ -257,23 +258,6 @@ async def _choose_admin_categories(cb: CallbackQuery, state: FSMContext, prefix:
     await cb.message.edit_reply_markup(reply_markup=draft_category_kb(prefix, get_categories(), _lang_for(cb), selected))
     await ack(cb)
     return False
-
-
-def _acquire_request_lock(request_id: str) -> bool:
-    if not request_id:
-        return True
-    now = time.monotonic()
-    for stale in [k for k, ts in _processing_requests.items() if (now - ts) >= _PROCESSING_TTL]:
-        _processing_requests.pop(stale, None)
-    if _processing_requests.get(request_id) is not None:
-        return False
-    _processing_requests[request_id] = now
-    return True
-
-
-def _release_request_lock(request_id: str) -> None:
-    if request_id:
-        _processing_requests.pop(request_id, None)
 
 
 def _plugin_display_name(plugin_entry: Dict[str, Any]) -> str:
@@ -1498,7 +1482,7 @@ async def _render_review(cb: CallbackQuery, state: FSMContext, token: str) -> No
             allow_approve=can_approve_request(entry),
             media_count=len(_comment_media_of_entry(entry)),
         ),
-        "new",
+        request_image_key(entry),
     )
     if msg:
         await state.update_data(draft_message_id=msg.message_id)
@@ -5794,7 +5778,7 @@ async def on_admin_review(cb: CallbackQuery, state: FSMContext) -> None:
         if context:
             text += "\n\n" + context
     text = f"{text}\n\n{_review_meta_block(entry, lang=_lang_for(cb))}"
-    review_img = {"update": "update", "delete": "delete"}.get(entry.get("type"), "new")
+    review_img = request_image_key(entry)
     review_msg = await answer(cb, text, kb, review_img)
     if review_msg:
         await state.update_data(draft_message_id=review_msg.message_id)
@@ -5918,7 +5902,7 @@ async def on_admin_prepublish(cb: CallbackQuery, state: FSMContext) -> None:
                 checked_on_set=checked_on_set,
                 lang=lang,
             ),
-            "new",
+            request_image_key(entry),
         )
     try:
         await cb.answer()
@@ -6078,7 +6062,7 @@ async def on_admin_draft_edit(cb: CallbackQuery, state: FSMContext) -> None:
                 checked_on_set=checked_on_set,
                 lang=lang,
             ),
-            "new",
+            request_image_key(entry),
         )
         await ack(cb)
         return
@@ -6555,7 +6539,7 @@ async def on_admin_draft_field_value(message: Message, state: FSMContext) -> Non
                         include_schedule=include_schedule,
                         lang=lang,
                     ),
-                    "new",
+                    request_image_key(entry),
                 )
                 if sent:
                     await state.update_data(draft_message_id=sent.message_id)
@@ -6570,7 +6554,7 @@ async def on_admin_draft_field_value(message: Message, state: FSMContext) -> Non
                     include_schedule=include_schedule,
                     lang=lang,
                 ),
-                "new",
+                request_image_key(entry),
             )
             if sent:
                 await state.update_data(draft_message_id=sent.message_id)
@@ -7922,6 +7906,8 @@ def _audit_line(event: dict, lang: str = "ru") -> str:
         "moderation.request_approved": "request_status_approved",
         "moderation.request_scheduled": "request_status_scheduled",
         "moderation.request_unscheduled": "btn_unschedule",
+        "moderation.request_updated": "audit_request_updated",
+        "moderation.request_withdrawn": "pending_withdrawn_admin",
     }.get(str(event.get("event")))
     if approval_label:
         name = t(approval_label, lang)
@@ -8298,7 +8284,7 @@ async def on_admin_request_file_upload(message: Message, state: FSMContext) -> N
             allow_vote=can_accept_vote(entry),
             media_count=len(_comment_media_of_entry(entry)),
         ),
-        "update" if entry.get("type") == "update" else "new",
+        request_image_key(entry),
     )
 
 

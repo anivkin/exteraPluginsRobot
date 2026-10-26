@@ -548,7 +548,7 @@
   "pending_file_id_mismatch": "Plugin ID in the file does not match the request.",
   "pending_delete_confirm": "Delete this request?",
   "pending_deleted": "Request deleted.",
-  "ask_update_note": "Describe what you changed in the request — moderators will see it.",
+  "ask_update_note": "Describe what you changed in the request. This comment and the file selected in the editor will be sent to moderators. Changes are applied only after you send this message.",
   "update_note_delivery_failed": "Changes were saved, but the updated request could not be sent to moderation. Try submitting it again from your profile.",
   "update_note_saved": "Changes sent to the moderators",
   "admin_request_update_note": "\n\n<b>What the author changed:</b>\n<blockquote expandable>{note}</blockquote>",
@@ -859,5 +859,10 @@
   "admin_audit_filter_approved": "Approved",
   "profile_pending_approved": "approved, awaiting publication",
   "profile_pending_scheduled": "approved, publication {datetime}",
-  "author_moderation_reasons_label": "Moderation reasons"
+  "author_moderation_reasons_label": "Moderation reasons",
+  "pending_request_changed": "The request has changed or has already been reviewed. Open it again from your profile.",
+  "pending_replacement_missing": "The request file is unavailable. Attach a new plugin file and save your changes again.",
+  "pending_withdrawn_admin": "Request withdrawn by the author",
+  "audit_request_updated": "Request updated by the author",
+  "profile_pending_delete_info": "<b>Channel removal request.</b> The plugin will remain in the channel until a superadmin confirms its removal."
 }

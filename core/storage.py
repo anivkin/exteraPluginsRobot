@@ -987,7 +987,15 @@ def save_requests(data: Dict[str, Any]) -> None:
 
 
 def load_users() -> Dict[str, Any]:
-    return _normalize_dict(_get_cached(_DOC_USERS), {"users": {}})
+    data = _normalize_dict(_get_cached(_DOC_USERS), {"users": {}})
+    changed = False
+    for user in (data.get("users") or {}).values():
+        if isinstance(user, dict) and user.get("language") == "uk":
+            user["language"] = "ua"
+            changed = True
+    if changed:
+        save_users(data)
+    return data
 
 
 def save_users(data: Dict[str, Any]) -> None:
@@ -1032,6 +1040,8 @@ _QUIZ_SEED_FILE = ROOT / "quiz_seed.json"
 def _normalize_quiz_question(item: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(item, dict):
         return None
+    if "uk" in item:
+        item = {**item, "ua": item.get("ua") or item["uk"]}
     result: Dict[str, Any] = {"id": str(item.get("id") or "").strip()}
     if not result["id"]:
         return None
@@ -1090,7 +1100,8 @@ def load_quiz_questions() -> List[Dict[str, Any]]:
     stored = _normalize_dict(_get_cached(_DOC_QUIZ), {"questions": []}).get("questions")
     items = [q for q in (_normalize_quiz_question(i) for i in (stored or [])) if q]
     if items:
-        if _add_quiz_translations(items):
+        changed = items != stored
+        if _add_quiz_translations(items) or changed:
             save_quiz_questions(items)
         return items
     seeded = quiz_seed_questions()
@@ -1107,6 +1118,9 @@ def save_quiz_questions(items: List[Dict[str, Any]]) -> None:
 
 def update_quiz_question(question_id: str, lang: str, text: str | None = None,
                          options: List[str] | None = None) -> bool:
+    lang = normalize_language(lang, None)
+    if not lang:
+        return False
     items = load_quiz_questions()
     for item in items:
         if item["id"] != question_id:
@@ -1123,6 +1137,9 @@ def update_quiz_question(question_id: str, lang: str, text: str | None = None,
 
 
 def add_quiz_question(question_id: str, lang: str, text: str, options: List[str]) -> bool:
+    lang = normalize_language(lang, None)
+    if not lang:
+        return False
     items = load_quiz_questions()
     question_id = str(question_id or "").strip()
     if not question_id or any(q["id"] == question_id for q in items):

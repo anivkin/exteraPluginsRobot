@@ -24,6 +24,7 @@ from aiogram.types import (
 from bot import limits
 from bot.cache import get_config
 from bot.context import get_lang
+from bot.languages import normalize_language
 from bot.formatting import split_html, telegram_html, visible_html_length
 from bot.texts import t
 from bot.telemetry import callback_trace
@@ -48,6 +49,14 @@ def image_path(image: Optional[str]) -> Optional[Path]:
             if path.is_file():
                 return path
     return None
+
+
+def localized_image_key(image: Optional[str], lang: Optional[str]) -> Optional[str]:
+    if image and normalize_language(lang) in {"ru", "ua"} and not image.endswith("_ru"):
+        russian = f"{image}_ru"
+        if image_path(russian) or _link_preview_url(russian):
+            return russian
+    return image
 
 
 def _remember_image(image: str, message):
@@ -161,7 +170,10 @@ def _link_preview_url(image: Optional[str]) -> Optional[str]:
     return preview_url
 
 
-def link_preview_options(image: Optional[str] = None, url: Optional[str] = None) -> Optional[LinkPreviewOptions]:
+def link_preview_options(image: Optional[str] = None, url: Optional[str] = None,
+                         *, lang: Optional[str] = None) -> Optional[LinkPreviewOptions]:
+    if lang is not None:
+        image = localized_image_key(image, lang)
     preview_url = url or _link_preview_url(image)
     if not preview_url:
         return None
@@ -407,10 +419,7 @@ async def answer(
         try:
             user = (target.from_user if isinstance(target, Message) else (target.from_user or (target.message.from_user if target.message else None)))
             lang = lang or get_lang(getattr(user, "id", None))
-            if lang == "ru" and not image.endswith("_ru"):
-                ru_key = f"{image}_ru"
-                if image_path(ru_key) or _link_preview_url(ru_key):
-                    image = ru_key
+            image = localized_image_key(image, lang)
         except Exception:
             pass
     preview_options = link_preview_options(image)

@@ -69,7 +69,8 @@ Managed via **`/settings`** in a group or **Profile → Joinly** (chat admins on
 ## Setup
 Requires **Python 3.12**.
 
-Interface texts are stored separately in `bot/locales/{ru,en,uk,zh}.json`.
+Interface texts are stored separately in `bot/locales/{ru,en,ua,zh}.json`.
+Inline search accepts a language suffix: `@exteraPluginsRobot plugin en` (`ru`, `en`, `ua`, `zh`).
 Moderation reason translations and quiz seeds are in the `reasons/` and `quiz/`
 subdirectories. Include the entire `bot/locales/` directory when deploying.
 Template reasons are shown in the recipient's selected language; custom text is

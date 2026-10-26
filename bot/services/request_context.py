@@ -22,6 +22,9 @@ def author_context(payload: dict, lang: str = "ru", *, existing_text: str = "") 
     comment = str(payload.get("admin_comment") or "").strip()
     if comment:
         parts.append(t("admin_request_comment", lang, comment=strip_blockquote_tags(telegram_html(comment))))
+    note = str(payload.get("last_update_note") or "").strip()
+    if note:
+        parts.append(t("admin_request_update_note", lang, note=strip_blockquote_tags(telegram_html(note))).strip())
     media = [item for item in payload.get("comment_media") or [] if isinstance(item, dict) and item.get("file_id")]
     if media:
         parts.append(t("admin_request_comment_media", lang, count=len(media)))

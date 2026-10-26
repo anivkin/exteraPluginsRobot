@@ -548,7 +548,7 @@
   "pending_file_id_mismatch": "ID плагіна у файлі не збігається із заявкою.",
   "pending_delete_confirm": "Видалити цю заявку?",
   "pending_deleted": "Заявку видалено.",
-  "ask_update_note": "Опишіть, що ви змінили в заявці — модератори це побачать.",
+  "ask_update_note": "Обов’язково опишіть, що змінили в заявці. Цей коментар і вибраний у редакторі файл буде надіслано модераторам. До надсилання коментаря зміни не застосовуються.",
   "update_note_delivery_failed": "Зміни збережено, але оновлену заявку не вдалося надіслати модерації. Спробуйте надіслати її знову з профілю.",
   "update_note_saved": "Зміни надіслано модераторам",
   "admin_request_update_note": "\n\n<b>Що змінив автор:</b>\n<blockquote expandable>{note}</blockquote>",
@@ -859,5 +859,10 @@
   "admin_audit_filter_approved": "Схвалені",
   "profile_pending_approved": "схвалено, очікує на публікацію",
   "profile_pending_scheduled": "схвалено, публікація {datetime}",
-  "author_moderation_reasons_label": "Причини модерації"
+  "author_moderation_reasons_label": "Причини модерації",
+  "pending_request_changed": "Заявка вже змінилася або була розглянута. Відкрийте її знову в профілі.",
+  "pending_replacement_missing": "Файл заявки недоступний. Прикріпіть новий файл плагіна та знову збережіть зміни.",
+  "pending_withdrawn_admin": "Автор видалив заявку",
+  "audit_request_updated": "Автор оновив заявку",
+  "profile_pending_delete_info": "<b>Заявка на видалення з каналу.</b> Плагін залишатиметься в каналі, доки суперадмін не підтвердить видалення."
 }

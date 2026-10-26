@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 def _forum_reply_markup(entry: dict | None, request_id: str, yes: int, no: int):
-    if isinstance(entry, dict) and entry.get("status") == "approved":
+    if isinstance(entry, dict) and entry.get("status") in {"approved", "published", "rejected", "deleted", "rework"}:
         return None
     if isinstance(entry, dict) and entry.get("type") == "unban_appeal":
         return moderation_appeal_kb(request_id, yes, no)
@@ -41,6 +41,7 @@ def can_accept_vote(entry: dict | None) -> bool:
         isinstance(entry, dict)
         and entry.get("type") != "delete"
         and entry.get("status") in VOTABLE_REQUEST_STATUSES
+        and not (entry.get("payload") or {}).get("update_notification_pending")
     )
 
 def moderation_config() -> dict[str, int]:
@@ -186,7 +187,7 @@ def previous_rounds_text(entry: dict | None, lang: str = "ru") -> str:
     return t("vote_previous_title", lang) + "\n" + "\n\n".join(blocks)
 
 
-def archive_votes_for_rework(request_id: str) -> dict | None:
+def archive_votes_for_rework(request_id: str, *, after_rework: bool = True) -> dict | None:
     entry = get_request_by_id(request_id)
     if not entry:
         return None
@@ -203,7 +204,8 @@ def archive_votes_for_rework(request_id: str) -> dict | None:
     return update_request_payload(request_id, {
         "moderation_votes": {},
         "previous_vote_rounds": rounds,
-        "resubmitted_after_rework": True,
+        "resubmitted_after_rework": after_rework or bool(payload.get("resubmitted_after_rework")),
+        "moderation_pending_votes": {},
     })
 
 
@@ -396,8 +398,10 @@ def commit_pending_vote(request_id: str, user_id: int, reason: str) -> dict | No
 _FORUM_IMG_BY_TYPE = {"unban_appeal": "appeal", "update": "update", "delete": "delete"}
 
 
-def _forum_image_key(entry: dict | None) -> str:
+def request_image_key(entry: dict | None) -> str:
     entry = entry or {}
+    if (entry.get("payload") or {}).get("is_appeal"):
+        return "appeal"
     return _FORUM_IMG_BY_TYPE.get(str(entry.get("type")), "new")
 
 
@@ -456,7 +460,7 @@ async def send_request_to_forum(bot, entry: dict, text: str, file_path: str | No
     reply_markup = _forum_reply_markup(entry, request_id, yes, no)
     chat_id = cfg["chat_id"]
     topic_id = cfg["topic_id"]
-    img_key = _forum_image_key(entry)
+    img_key = request_image_key(entry)
 
     parts = split_html(rendered_text, limits.MESSAGE_TEXT)
     sent_message_ids: list[int] = []
@@ -471,7 +475,7 @@ async def send_request_to_forum(bot, entry: dict, text: str, file_path: str | No
                 parse_mode=ParseMode.HTML,
                 reply_markup=reply_markup if last else None,
                 disable_web_page_preview=False,
-                link_preview_options=link_preview_options(img_key) if last else None,
+                link_preview_options=link_preview_options(img_key, lang="ru") if last else None,
                 message_thread_id=topic_id,
             )
             sent_message_ids.append(int(msg.message_id))
@@ -576,7 +580,7 @@ async def refresh_forum_vote_keyboard(bot, entry: dict) -> None:
                 message_id=int(text_message_id),
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=False,
-                link_preview_options=link_preview_options(_forum_image_key(entry)),
+                link_preview_options=link_preview_options(request_image_key(entry), lang="ru"),
             )
         except Exception:
             pass
@@ -594,7 +598,7 @@ async def refresh_forum_vote_keyboard(bot, entry: dict) -> None:
             parse_mode=ParseMode.HTML,
             reply_markup=reply_markup,
             disable_web_page_preview=False,
-            link_preview_options=link_preview_options(_forum_image_key(entry)),
+            link_preview_options=link_preview_options(request_image_key(entry), lang="ru"),
         )
         return
     except Exception:
